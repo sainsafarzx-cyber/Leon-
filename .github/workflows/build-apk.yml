@@ -1,0 +1,82 @@
+name: Build LEON AI APK
+
+on:
+  push:
+    branches:
+      - "**"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-apk:
+    name: Build Universal Android APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Prepare debug signing keystore
+        run: |
+          if [ ! -f debug.keystore ]; then
+            if [ -f debug.keystore.base64 ] && base64 -d debug.keystore.base64 > debug.keystore 2>/dev/null; then
+              echo "Decoded debug.keystore from debug.keystore.base64"
+            else
+              rm -f debug.keystore
+              keytool -genkeypair -v \
+                -keystore debug.keystore \
+                -storepass android \
+                -alias androiddebugkey \
+                -keypass android \
+                -keyalg RSA \
+                -keysize 2048 \
+                -validity 10000 \
+                -dname "CN=Android Debug,O=Android,C=US"
+            fi
+          fi
+
+      - name: Set up Gradle 9.3.1
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "9.3.1"
+
+      - name: Build universal installable APK
+        run: gradle :app:assembleDebug --no-daemon --stacktrace
+
+      - name: Package APK for download
+        run: |
+          mkdir -p dist
+          cp app/build/outputs/apk/debug/app-debug.apk dist/LEON-AI-universal.apk
+
+      - name: Upload APK workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LEON-AI-universal-apk
+          path: dist/LEON-AI-universal.apk
+          if-no-files-found: error
+
+      - name: Publish direct APK to GitHub Releases
+        uses: softprops/action-gh-release@v2
+        continue-on-error: true
+        with:
+          tag_name: latest-apk
+          name: LEON AI — Latest Universal Android APK
+          body: |
+            Universal installable Android APK for **LEON AI** (Android 7.0+ / API 24–36, ARM64 + ARMv7 + x86).
+
+            ### Install on any Android phone:
+            1. Tap **LEON-AI-universal.apk** below to download.
+            2. Open the downloaded `.apk` file.
+            3. Allow **Install unknown apps** if prompted, then tap **Install**.
+          files: dist/LEON-AI-universal.apk
