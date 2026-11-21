@@ -25,34 +25,54 @@ jobs:
           java-version: "21"
 
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
+        with:
+          accept-android-sdk-licenses: "yes"
+          log-accepted-android-sdk-licenses: false
+          packages: |
+            platform-tools
+            platforms;android-36.1
+            build-tools;36.0.0
+
+      - name: Ensure Android SDK licenses are accepted
+        run: |
+          SDK_ROOT="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
+          SDKMANAGER=$(command -v sdkmanager || find "$SDK_ROOT" -name sdkmanager -type f 2>/dev/null | head -n 1)
+          if [ -n "$SDKMANAGER" ]; then
+            yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
+          fi
 
       - name: Prepare debug signing keystore
         run: |
-          if [ ! -f debug.keystore ]; then
-            if [ -f debug.keystore.base64 ] && base64 -d debug.keystore.base64 > debug.keystore 2>/dev/null; then
-              echo "Decoded debug.keystore from debug.keystore.base64"
-            else
-              rm -f debug.keystore
-              keytool -genkeypair -v \
-                -keystore debug.keystore \
-                -storepass android \
-                -alias androiddebugkey \
-                -keypass android \
-                -keyalg RSA \
-                -keysize 2048 \
-                -validity 10000 \
-                -dname "CN=Android Debug,O=Android,C=US"
-            fi
+          if [ -f debug.keystore.base64 ] && base64 -d debug.keystore.base64 > debug.keystore 2>/dev/null; then
+            echo "Decoded debug.keystore from debug.keystore.base64"
+          fi
+          if [ ! -s debug.keystore ] || ! keytool -list -keystore debug.keystore -storepass android -alias androiddebugkey >/dev/null 2>&1; then
+            rm -f debug.keystore
+            keytool -genkeypair -v \
+              -keystore debug.keystore \
+              -storepass android \
+              -alias androiddebugkey \
+              -keypass android \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
           fi
 
       - name: Set up Gradle 9.3.1
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v5
         with:
           gradle-version: "9.3.1"
 
       - name: Build universal installable APK
-        run: gradle :app:assembleDebug --no-daemon --stacktrace
+        run: |
+          gradle :app:assembleDebug \
+            --no-daemon \
+            --no-configuration-cache \
+            --stacktrace \
+            -Dorg.gradle.jvmargs="-Xmx3g -XX:MaxMetaspaceSize=768m -Dfile.encoding=UTF-8 -Djava.awt.headless=true" \
+            -Dorg.gradle.workers.max=2
 
       - name: Package APK for download
         run: |
