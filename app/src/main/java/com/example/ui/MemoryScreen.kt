@@ -263,7 +263,7 @@ fun MemoryScreen(
                                 style = MaterialTheme.typography.titleMedium
                             )
                             Text(
-                                text = "Keep \"Hey Leon\", AI Q&A, torch, volume & alert reading working while locked (calls/WhatsApp stay unlock-protected)",
+                                text = "Keep \"Hey Leon\", voice calling, AI Q&A, music, torch & alert reading working while screen is off (WhatsApp/SMS stay unlock-protected)",
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )

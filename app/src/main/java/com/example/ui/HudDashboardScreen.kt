@@ -59,6 +59,7 @@ import androidx.compose.material.icons.rounded.BatteryFull
 import androidx.compose.material.icons.rounded.Bluetooth
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Explore
 import androidx.compose.material.icons.rounded.FlashlightOn
 import androidx.compose.material.icons.rounded.ImageSearch
 import androidx.compose.material.icons.rounded.Mic
@@ -67,6 +68,7 @@ import androidx.compose.material.icons.rounded.Newspaper
 import androidx.compose.material.icons.rounded.Psychology
 import androidx.compose.material.icons.rounded.RemoveRedEye
 import androidx.compose.material.icons.rounded.Security
+import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.StopCircle
 import androidx.compose.material.icons.rounded.Wifi
 import androidx.compose.material3.TextButton
@@ -115,6 +117,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.AssistantLanguage
 import com.example.data.ConversationMessage
 import com.example.data.DeviceTelemetry
+import com.example.data.HumanReflectionBanner
 import com.example.data.MemoryProposal
 import com.example.data.PendingConfirmation
 import com.example.data.UiState
@@ -133,6 +136,8 @@ fun HudDashboardScreen(
     viewModel: LeonViewModel,
     onOpenNews: () -> Unit = {},
     onOpenOfflineVision: () -> Unit = {},
+    onOpenSocialPoster: () -> Unit = {},
+    onOpenLifeCompass: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -149,6 +154,7 @@ fun HudDashboardScreen(
     val suggestions by viewModel.suggestions.collectAsStateWithLifecycle()
     val pendingConfirmation by viewModel.pendingConfirmation.collectAsStateWithLifecycle()
     val pendingMemoryProposal by viewModel.pendingMemoryProposal.collectAsStateWithLifecycle()
+    val latestHumanReflection by viewModel.latestHumanReflection.collectAsStateWithLifecycle()
 
     val prefs = (prefsState as? UiState.Success)?.data
     val lockScreenModeEnabled = prefs?.lockScreenModeEnabled ?: true
@@ -417,6 +423,8 @@ fun HudDashboardScreen(
                 },
                 onOpenNews = onOpenNews,
                 onOpenOfflineVision = onOpenOfflineVision,
+                onOpenSocialPoster = onOpenSocialPoster,
+                onOpenLifeCompass = onOpenLifeCompass,
                 onMusicToggle = { viewModel.toggleMusic() },
                 onEmergencyStop = { viewModel.emergencyStop() }
             )
@@ -480,6 +488,18 @@ fun HudDashboardScreen(
                         proposal = proposal,
                         onApprove = { viewModel.approveMemoryProposal() },
                         onDismiss = { viewModel.dismissMemoryProposal() }
+                    )
+                }
+            }
+
+            AnimatedVisibility(visible = latestHumanReflection != null) {
+                latestHumanReflection?.let { reflection ->
+                    HumanReflectionInsightCard(
+                        reflection = reflection,
+                        onOpenCompass = {
+                            viewModel.openLifeCompassWithSeed(reflection.sourceQuery)
+                        },
+                        onDismiss = { viewModel.dismissHumanReflection() }
                     )
                 }
             }
@@ -751,6 +771,8 @@ private fun TelemetryRibbon(
     onToggleInternet: () -> Unit,
     onOpenNews: () -> Unit,
     onOpenOfflineVision: () -> Unit,
+    onOpenSocialPoster: () -> Unit,
+    onOpenLifeCompass: () -> Unit,
     onMusicToggle: () -> Unit,
     onEmergencyStop: () -> Unit
 ) {
@@ -827,6 +849,58 @@ private fun TelemetryRibbon(
                         )
                         Text(
                             text = "Eye AI",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = EmeraldTelemetry,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+                Surface(
+                    onClick = onOpenSocialPoster,
+                    color = NeuralViolet.copy(alpha = 0.16f),
+                    shape = RoundedCornerShape(10.dp),
+                    border = BorderStroke(1.dp, NeuralViolet.copy(alpha = 0.65f)),
+                    modifier = Modifier.testTag("hud_social_button")
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Share,
+                            contentDescription = "Open Social Story & Video Auto-Poster",
+                            tint = ArcCyan,
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Text(
+                            text = "Social",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = ArcCyan,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+                Surface(
+                    onClick = onOpenLifeCompass,
+                    color = EmeraldTelemetry.copy(alpha = 0.14f),
+                    shape = RoundedCornerShape(10.dp),
+                    border = BorderStroke(1.dp, EmeraldTelemetry.copy(alpha = 0.65f)),
+                    modifier = Modifier.testTag("hud_compass_button")
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Explore,
+                            contentDescription = "Open Sahi Raah Life Compass",
+                            tint = EmeraldTelemetry,
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Text(
+                            text = "Sahi Raah",
                             style = MaterialTheme.typography.labelSmall,
                             color = EmeraldTelemetry,
                             fontWeight = FontWeight.Bold
@@ -1261,6 +1335,98 @@ private fun MemoryProposalCard(
                     modifier = Modifier.weight(1f)
                 ) {
                     Text("Dismiss")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun HumanReflectionInsightCard(
+    reflection: HumanReflectionBanner,
+    onOpenCompass: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = EmeraldTelemetry.copy(alpha = 0.10f)),
+        border = BorderStroke(1.dp, EmeraldTelemetry.copy(alpha = 0.7f)),
+        shape = RoundedCornerShape(16.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 8.dp)
+            .testTag("hud_wisdom_insight_card")
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Explore,
+                        contentDescription = null,
+                        tint = EmeraldTelemetry,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Text(
+                        text = "सही राह • ${reflection.emotionalTone}",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = EmeraldTelemetry,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                IconButton(
+                    onClick = onDismiss,
+                    modifier = Modifier
+                        .size(48.dp)
+                        .testTag("hud_wisdom_dismiss_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Close,
+                        contentDescription = "Dismiss Sahi Raah Insight",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
+            if (reflection.innerThought.isNotBlank()) {
+                Text(
+                    text = reflection.innerThought,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            if (reflection.rightPathAdvice.isNotBlank()) {
+                Text(
+                    text = reflection.rightPathAdvice,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End
+            ) {
+                TextButton(
+                    onClick = onOpenCompass,
+                    modifier = Modifier.testTag("hud_wisdom_open_compass_button")
+                ) {
+                    Text("Open Sahi Raah Compass", color = ArcCyan, fontWeight = FontWeight.SemiBold)
                 }
             }
         }

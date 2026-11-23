@@ -1,7 +1,7 @@
 <resources>
     <string name="app_name">LEON AI</string>
     <string name="accessibility_service_label">LEON AI Automation Helper</string>
-    <string name="accessibility_service_description">Allows LEON AI to perform user-confirmed navigation actions (Home, Back, Notifications, and assisted messaging) only when explicitly authorized by you.</string>
+    <string name="accessibility_service_description">Allows LEON AI to perform user-confirmed navigation actions and user-started Story/Video Auto-Publish steps for Instagram, Facebook, and WhatsApp only when explicitly armed by you.</string>
     <string name="notification_listener_label">LEON AI Notification Reader</string>
     <string name="voice_channel_name">LEON Always-Ready Voice</string>
     <string name="voice_channel_desc">Hands-free Hey Leon wake-word listening service</string>

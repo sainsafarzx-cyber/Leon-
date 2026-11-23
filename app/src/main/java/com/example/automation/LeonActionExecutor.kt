@@ -19,18 +19,24 @@ import android.provider.AlarmClock
 import android.provider.ContactsContract
 import android.provider.MediaStore
 import android.provider.Settings
+import android.annotation.SuppressLint
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.telecom.TelecomManager
 import androidx.core.content.ContextCompat
 import com.example.data.ActionType
 import com.example.data.DeviceAction
 import com.example.data.DeviceTelemetry
+import com.example.data.MemoryCategory
+import com.example.data.MemoryItem
 import com.example.media.LeonMusicEngine
 import com.example.service.AccessibilityBridge
 import com.example.service.BrightnessBridge
 import com.example.service.LockScreenPolicy
 import com.example.service.NotificationBridge
 import java.net.URLEncoder
+import java.util.Locale
 
 data class ActionExecutionOutcome(
     val success: Boolean,
@@ -185,7 +191,7 @@ class LeonActionExecutor(private val context: Context) {
             ActionType.CREATE_TASK, ActionType.CREATE_ROUTINE, ActionType.EMERGENCY_STOP,
             ActionType.OPTICAL_MORSE, ActionType.TOGGLE_AIR_GESTURES, ActionType.ANALYZE_ENVIRONMENT,
             ActionType.SAVE_MEMORY, ActionType.SET_OWNER_IDENTITY, ActionType.FETCH_NEWS,
-            ActionType.OPEN_OFFLINE_VISION ->
+            ActionType.OPEN_OFFLINE_VISION, ActionType.SOCIAL_AUTO_POST, ActionType.OPEN_LIFE_COMPASS ->
                 ActionExecutionOutcome(true, "Handled by LEON controller.")
         }
     }
@@ -311,6 +317,9 @@ class LeonActionExecutor(private val context: Context) {
             "play store" to "com.android.vending",
             "प्ले स्टोर" to "com.android.vending",
             "instagram" to "com.instagram.android",
+            "इंस्टाग्राम" to "com.instagram.android",
+            "facebook" to "com.facebook.katana",
+            "फेसबुक" to "com.facebook.katana",
             "telegram" to "org.telegram.messenger"
         )
         knownPackages.entries.firstOrNull { query.contains(it.key) }?.let { (_, pkg) ->
@@ -349,16 +358,61 @@ class LeonActionExecutor(private val context: Context) {
         return ActionExecutionOutcome(false, "App '$target' is not installed on this device.")
     }
 
-    private fun makeCall(target: String): ActionExecutionOutcome {
-        val phoneNumber = resolvePhoneNumber(target)
+    @SuppressLint("MissingPermission")
+    fun makeCall(
+        target: String,
+        memories: List<MemoryItem> = emptyList(),
+        allowBackgroundDirectOnly: Boolean = false
+    ): ActionExecutionOutcome {
+        val phoneNumber = resolvePhoneNumber(target, memories)
         if (phoneNumber.isBlank()) {
+            if (allowBackgroundDirectOnly) {
+                return if (!hasPermission(Manifest.permission.READ_CONTACTS) && target.none { it.isDigit() }) {
+                    ActionExecutionOutcome(
+                        false,
+                        "बॉस, स्क्रीन बंद होने पर नाम से कॉल लगाने के लिए Permissions में 'Contacts Lookup' चालू करें, या सीधे नंबर बोलें।"
+                    )
+                } else {
+                    ActionExecutionOutcome(
+                        false,
+                        "बॉस, '$target' का नंबर कॉन्टैक्ट्स में नहीं मिला। कृपया सही नाम या फ़ोन नंबर बोलें।"
+                    )
+                }
+            }
             val dialIntent = Intent(Intent.ACTION_DIAL).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             launchSafe(dialIntent)
             return ActionExecutionOutcome(true, "Opened Phone dialer for $target.")
         }
+
         val uri = Uri.parse("tel:$phoneNumber")
-        return if (hasPermission(Manifest.permission.CALL_PHONE)) {
-            launchSafe(Intent(Intent.ACTION_CALL, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        if (hasPermission(Manifest.permission.CALL_PHONE)) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                val placedViaTelecom = runCatching {
+                    val tm = context.getSystemService(Context.TELECOM_SERVICE) as? TelecomManager
+                    if (tm != null) {
+                        tm.placeCall(uri, Bundle())
+                        true
+                    } else {
+                        false
+                    }
+                }.getOrDefault(false)
+                if (placedViaTelecom) {
+                    return ActionExecutionOutcome(true, "Calling $target ($phoneNumber).")
+                }
+            }
+            val callOutcome = launchSafe(Intent(Intent.ACTION_CALL, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            return if (callOutcome.success) {
+                ActionExecutionOutcome(true, "Calling $target ($phoneNumber).")
+            } else {
+                callOutcome
+            }
+        }
+
+        return if (allowBackgroundDirectOnly) {
+            ActionExecutionOutcome(
+                false,
+                "बॉस, स्क्रीन बंद होने पर कॉल लगाने के लिए Permissions में 'Direct Calling' परमिशन चालू करें।"
+            )
         } else {
             launchSafe(Intent(Intent.ACTION_DIAL, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         }
@@ -609,25 +663,193 @@ class LeonActionExecutor(private val context: Context) {
         }
     }
 
-    fun resolvePhoneNumber(nameOrNumber: String): String {
-        val trimmed = nameOrNumber.trim()
-        if (trimmed.any { it.isDigit() } && trimmed.count { it.isDigit() } >= 6) {
-            return trimmed
+    fun resolvePhoneNumber(
+        nameOrNumber: String,
+        memories: List<MemoryItem> = emptyList()
+    ): String {
+        val normalizedInput = normalizeDigits(nameOrNumber.trim())
+        val phoneChars = normalizedInput.filterIndexed { index, c ->
+            c.isDigit() || (c == '+' && index == 0)
         }
-        if (!hasPermission(Manifest.permission.READ_CONTACTS) || trimmed.isBlank()) {
+        val digitCount = phoneChars.count { it.isDigit() }
+        if (digitCount >= 6) {
+            return phoneChars
+        }
+        val trimmed = normalizedInput
+        if (trimmed.isBlank()) return ""
+
+        // 1. Check saved Forever Memories (contact numbers saved by the user)
+        resolveNumberFromMemories(trimmed, memories)?.let { return it }
+
+        if (!hasPermission(Manifest.permission.READ_CONTACTS)) {
             return ""
         }
-        return try {
+
+        // 2. Direct SQL LIKE query first
+        try {
             val uri = ContactsContract.CommonDataKinds.Phone.CONTENT_URI
-            val projection = arrayOf(ContactsContract.CommonDataKinds.Phone.NUMBER)
+            val projection = arrayOf(
+                ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,
+                ContactsContract.CommonDataKinds.Phone.NUMBER
+            )
             val selection = "${ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME} LIKE ?"
             val args = arrayOf("%$trimmed%")
             context.contentResolver.query(uri, projection, selection, args, null)?.use { cursor ->
-                if (cursor.moveToFirst()) cursor.getString(0).orEmpty() else ""
-            } ?: ""
+                if (cursor.moveToFirst()) {
+                    val number = cursor.getString(1).orEmpty().trim()
+                    if (number.isNotBlank()) return sanitizeDialableNumber(number)
+                }
+            }
+
+            // 3. Phonetic Hindi-to-Latin & relationship alias scan across contacts
+            val queryVariants = buildSearchVariants(trimmed)
+            context.contentResolver.query(uri, projection, null, null, null)?.use { cursor ->
+                var bestNumber = ""
+                var bestScore = 0
+                while (cursor.moveToNext()) {
+                    val contactName = cursor.getString(0).orEmpty().trim()
+                    val contactNumber = cursor.getString(1).orEmpty().trim()
+                    if (contactName.isBlank() || contactNumber.isBlank()) continue
+                    val score = scoreContactMatch(contactName, queryVariants)
+                    if (score > bestScore) {
+                        bestScore = score
+                        bestNumber = contactNumber
+                    }
+                }
+                if (bestScore >= 2 && bestNumber.isNotBlank()) {
+                    return sanitizeDialableNumber(bestNumber)
+                }
+            }
         } catch (_: Exception) {
-            ""
         }
+        return ""
+    }
+
+    private fun resolveNumberFromMemories(query: String, memories: List<MemoryItem>): String? {
+        if (memories.isEmpty()) return null
+        val variants = buildSearchVariants(query)
+        val sortedMemories = memories.sortedByDescending { it.category == MemoryCategory.CONTACT.wireValue }
+        for (mem in sortedMemories) {
+            val numberMatch = Regex("(\\+?\\d[\\d\\s\\-]{5,15}\\d)").find(normalizeDigits(mem.memoryValue))
+                ?: continue
+            val haystack = "${mem.memoryKey} ${mem.memoryValue}".lowercase(Locale.ROOT)
+            val translitHaystack = transliterateDevanagari(haystack)
+            val matched = variants.any { v ->
+                v.length >= 2 && (haystack.contains(v) || translitHaystack.contains(v))
+            }
+            if (matched) {
+                return sanitizeDialableNumber(numberMatch.groupValues[1])
+            }
+        }
+        return null
+    }
+
+    private fun sanitizeDialableNumber(raw: String): String {
+        val ascii = normalizeDigits(raw.trim())
+        val cleaned = ascii.filterIndexed { idx, c -> c.isDigit() || (c == '+' && idx == 0) }
+        return cleaned.ifBlank { raw.trim() }
+    }
+
+    private fun normalizeDigits(input: String): String {
+        val sb = StringBuilder(input.length)
+        for (ch in input) {
+            when (ch) {
+                in '०'..'९' -> sb.append(('0'.code + (ch.code - '०'.code)).toChar())
+                else -> sb.append(ch)
+            }
+        }
+        return sb.toString()
+    }
+
+    private fun scoreContactMatch(contactName: String, queryVariants: Set<String>): Int {
+        val nameLower = contactName.lowercase(Locale.ROOT)
+        val nameLatin = transliterateDevanagari(nameLower)
+        var best = 0
+        for (variant in queryVariants) {
+            if (variant.length < 2) continue
+            when {
+                nameLower == variant || nameLatin == variant -> best = maxOf(best, 5)
+                nameLower.startsWith(variant) || nameLatin.startsWith(variant) -> best = maxOf(best, 4)
+                nameLower.contains(variant) || nameLatin.contains(variant) -> best = maxOf(best, 3)
+                variant.length >= 4 && nameLatin.isNotBlank() &&
+                    (consonantSkeleton(nameLatin) == consonantSkeleton(variant)) -> best = maxOf(best, 2)
+            }
+        }
+        return best
+    }
+
+    internal fun buildSearchVariants(query: String): Set<String> {
+        val lower = query.lowercase(Locale.ROOT).trim()
+        val latin = transliterateDevanagari(lower)
+        val out = linkedSetOf(lower, latin)
+        val aliasGroups = listOf(
+            listOf("मम्मी", "माँ", "मां", "मम्मा", "अम्मी", "mom", "mummy", "mammi", "maa", "mother", "mama", "ammi"),
+            listOf("पापा", "पिता", "पिताजी", "डैड", "डैडी", "अब्बू", "papa", "dad", "daddy", "father", "pitaji", "abbu"),
+            listOf("भाई", "भैया", "भइया", "bhai", "bhaiya", "brother", "bro"),
+            listOf("दीदी", "बहन", "सिस्टर", "didi", "behen", "sister", "sis"),
+            listOf("घर", "होम", "ghar", "home"),
+            listOf("ऑफिस", "दफ्तर", "office"),
+            listOf("बॉस", "boss")
+        )
+        for (group in aliasGroups) {
+            if (group.any { lower.contains(it) || latin.contains(it) }) {
+                out.addAll(group)
+            }
+        }
+        lower.split(Regex("\\s+")).filter { it.length >= 2 }.forEach { out.add(it) }
+        latin.split(Regex("\\s+")).filter { it.length >= 2 }.forEach { out.add(it) }
+        return out.filter { it.isNotBlank() }.toSet()
+    }
+
+    private fun consonantSkeleton(s: String): String =
+        s.replace(Regex("[aeiou\\s]+"), "")
+
+    internal fun transliterateDevanagari(input: String): String {
+        val consonants = mapOf(
+            'क' to "k", 'ख' to "kh", 'ग' to "g", 'घ' to "gh", 'ङ' to "n",
+            'च' to "ch", 'छ' to "chh", 'ज' to "j", 'झ' to "jh", 'ञ' to "n",
+            'ट' to "t", 'ठ' to "th", 'ड' to "d", 'ढ' to "dh", 'ण' to "n",
+            'त' to "t", 'थ' to "th", 'द' to "d", 'ध' to "dh", 'न' to "n",
+            'प' to "p", 'फ' to "ph", 'ब' to "b", 'भ' to "bh", 'म' to "m",
+            'य' to "y", 'र' to "r", 'ल' to "l", 'व' to "v", 'श' to "sh",
+            'ष' to "sh", 'स' to "s", 'ह' to "h",
+            'क़' to "k", 'ख़' to "kh", 'ग़' to "g", 'ज़' to "z", 'ड़' to "r", 'ढ़' to "rh", 'फ़' to "f"
+        )
+        val independentVowels = mapOf(
+            'अ' to "a", 'आ' to "a", 'इ' to "i", 'ई' to "i", 'उ' to "u", 'ऊ' to "u",
+            'ए' to "e", 'ऐ' to "ai", 'ओ' to "o", 'औ' to "au", 'ऋ' to "ri"
+        )
+        val matras = mapOf(
+            'ा' to "a", 'ि' to "i", 'ी' to "i", 'ु' to "u", 'ू' to "u",
+            'े' to "e", 'ै' to "ai", 'ो' to "o", 'ौ' to "au", 'ृ' to "ri"
+        )
+        val sb = StringBuilder()
+        var i = 0
+        while (i < input.length) {
+            val c = input[i]
+            val next = input.getOrNull(i + 1)
+            when {
+                c in consonants -> {
+                    sb.append(consonants[c])
+                    when {
+                        next == '्' -> i++ // halant suppresses inherent 'a'
+                        next != null && next in matras -> {
+                            sb.append(matras[next])
+                            i++
+                        }
+                        next == null || next == ' ' || next in independentVowels -> Unit // drop final schwa in Hindi names like राहुल -> rahul
+                        else -> sb.append('a')
+                    }
+                }
+                c in independentVowels -> sb.append(independentVowels[c])
+                c == 'ं' || c == 'ँ' -> sb.append('n')
+                c == 'ः' -> sb.append('h')
+                c == '़' -> Unit
+                else -> sb.append(c)
+            }
+            i++
+        }
+        return sb.toString().lowercase(Locale.ROOT)
     }
 
     private fun hasPermission(permission: String): Boolean =

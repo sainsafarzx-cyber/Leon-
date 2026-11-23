@@ -9,6 +9,9 @@ import com.example.data.DeviceAction
 import com.example.data.DeviceTelemetry
 import com.example.data.MemoryCategory
 import com.example.data.MemoryItem
+import com.example.social.SocialMediaEngine
+import com.example.social.SocialPlatform
+import com.example.social.SocialPostType
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -41,6 +44,12 @@ object LocalCommandRouter {
         // Priority: Owner/Creator Identity & One-Tell Forever Memory should be evaluated
         // on the full prompt BEFORE compound splitting so "मेरा नाम X है और कोई ऐप डाउनलोड करे..." stays intact!
         routeForeverIdentityAndMemory(clean, lower, ownerName, memories)?.let { return it }
+
+        // Priority: Social Auto-Poster supports multi-app phrases containing "और/and" (e.g. "इंस्टाग्राम और व्हाट्सएप पर स्टोरी डालो")
+        routeSocialMediaClause(clean, lower, isDeviceLocked, ownerName)?.let { return it }
+
+        // Priority: Human-like Right-Path Mentor / Life Compass requests
+        routeLifeCompassClause(clean, lower, isDeviceLocked, ownerName)?.let { return it }
 
         if (compoundSplitter.containsMatchIn(clean)) {
             val parts = clean.split(compoundSplitter).map { it.trim() }.filter { it.isNotEmpty() }
@@ -182,7 +191,13 @@ object LocalCommandRouter {
                     suggestions = listOf("ताज़ा न्यूज़ सुनाओ", "गाना बजाओ")
                 )
             }
-            else -> null
+            else -> HumanWisdomEngine.tryBuildOfflineHumanGuidanceResult(
+                rawPrompt = clean,
+                defaultLanguage = defaultLanguage,
+                ownerName = ownerName,
+                tasks = tasks,
+                memories = memories
+            )
         }
     }
 
@@ -715,6 +730,9 @@ object LocalCommandRouter {
             )
         }
 
+        // 12c. Direct Voice Calling (works offline & when screen is off/locked)
+        routeCallClause(clean, lower, isDeviceLocked, ownerName)?.let { return it }
+
         // 13. Direct open-app & open-settings commands
         val openActionWord = lower.contains("open") || lower.contains("ओपन") || lower.contains("खोल") ||
             lower.contains("kholo") || lower.contains("chalu") || lower.contains("चालू") || lower.contains("launch ")
@@ -722,6 +740,8 @@ object LocalCommandRouter {
             val appTarget = when {
                 lower.contains("youtube") || lower.contains("यूट्यूब") -> "YouTube"
                 lower.contains("whatsapp") || lower.contains("व्हाट्सएप") || lower.contains("व्हाट्सऐप") -> "WhatsApp"
+                lower.contains("instagram") || lower.contains("इंस्टाग्राम") -> "Instagram"
+                lower.contains("facebook") || lower.contains("फेसबुक") -> "Facebook"
                 lower.contains("chrome") || lower.contains("क्रोम") -> "Chrome"
                 lower.contains("camera") || lower.contains("कैमरा") -> "Camera"
                 lower.contains("spotify") -> "Spotify"
@@ -760,6 +780,80 @@ object LocalCommandRouter {
         }
 
         return null
+    }
+
+    internal fun routeCallClause(
+        clean: String,
+        lower: String,
+        isDeviceLocked: Boolean,
+        ownerName: String = ""
+    ): AliBrainResult? {
+        if (lower.contains("whatsapp") || lower.contains("व्हाट्सएप") || lower.contains("व्हाट्सऐप") ||
+            lower.contains("callback") || lower.contains("call back") || lower.contains("missed call") ||
+            lower.contains("कॉल लॉग") || lower.contains("call log") || lower.contains("history") ||
+            lower.contains("रिकॉर्ड") || lower.contains("record") ||
+            lower.contains("क्या कर सकते") || lower.contains("what can you do")
+        ) {
+            return null
+        }
+
+        val hasCallIntent =
+            Regex("(?i)\\b(?:call|dial|ring|phone)\\b").containsMatchIn(lower) ||
+                lower.contains("कॉल") ||
+                lower.contains("काल") ||
+                ((lower.contains("फोन") || lower.contains("फ़ोन") || lower.contains("phone")) &&
+                    (lower.contains("लगा") || lower.contains("कर") || lower.contains("mila") || lower.contains("मिला") || lower.contains("dial")))
+
+        if (!hasCallIntent) return null
+
+        // Never intercept "phone open karo" / "open phone app" or "phone settings"
+        if ((lower.contains("setting") || lower.contains("सेटिंग") || lower.contains("खोलो") || lower.contains("open ")) &&
+            !lower.contains("कॉल") && !Regex("(?i)\\bcall\\b").containsMatchIn(lower)
+        ) {
+            return null
+        }
+
+        var target = clean
+            .replace(Regex("(?i)^(?:hey|hi|ok|hello|हे|हाय|ओके)\\s+(?:leon|लियोन|लिऑन|ali|अली)[,\\s]*"), "")
+            .replace(Regex("(?i)\\b(?:please|pls|kindly|make\\s+a|place\\s+a|give\\s+a|do\\s+a|to|for|me|a|an|on|at|ko|par|pe|se|ka|ki|lagao|laga|karo|karna|kardo|kar\\s+do|mila|milao|phone|call|dial|ring|leon|ali)\\b"), " ")
+            .replace(Regex("(?:प्लीज|कृपया|जरा|ज़रा|एक\\s+बार|लियोन|लिऑन|अली|को|पर|पे|से|का|की|कॉल|काल|फोन|फ़ोन|डायल|लगाओ|लगा|लगाना|लगा\\s+दो|करो|करना|कर\\s+दो|मिलाओ|मिला)"), " ")
+            .replace(Regex("\\s+"), " ")
+            .trim(' ', ',', '.', '!', '?', '।', ':', '-', '"', '\'')
+
+        // Also rescue bare 6+ digit phone number if any extra words clung to it
+        val digitToken = Regex("(\\+?\\d[\\d\\s\\-]{5,15}\\d)").find(clean)?.groupValues?.get(1)
+        if (target.isBlank() && digitToken != null) {
+            target = digitToken.trim()
+        }
+
+        val bossLabel = if (ownerName.isNotBlank()) "$ownerName बॉस" else "बॉस"
+        if (target.isBlank()) {
+            return AliBrainResult(
+                replyText = "जी $bossLabel, किसको कॉल लगाना है? कृपया नाम या फ़ोन नंबर बोलिए।",
+                spokenLanguage = AssistantLanguage.HINDI,
+                actions = listOf(DeviceAction(ActionType.SPEAK_ONLY)),
+                suggestions = listOf("मम्मी को कॉल लगाओ", "पापा को कॉल करो")
+            )
+        }
+
+        val reply = if (isDeviceLocked) {
+            "जी $bossLabel, $target को कॉल लगा रहा हूँ।"
+        } else {
+            "जी $bossLabel, $target को कॉल लगाने के लिए तैयार हूँ।"
+        }
+        return AliBrainResult(
+            replyText = reply,
+            spokenLanguage = AssistantLanguage.HINDI,
+            actions = listOf(
+                DeviceAction(
+                    type = ActionType.MAKE_CALL,
+                    target = target,
+                    requiresConfirmation = !isDeviceLocked,
+                    confirmationReason = "$target को फ़ोन कॉल लगाएँ?"
+                )
+            ),
+            suggestions = listOf("गाना बजाओ", "फ्लैशलाइट ऑन करो")
+        )
     }
 
     private fun routeBrightnessClause(lower: String, telemetry: DeviceTelemetry): AliBrainResult? {
@@ -923,5 +1017,132 @@ object LocalCommandRouter {
             }
             else -> null
         }
+    }
+
+    internal fun routeSocialMediaClause(
+        clean: String,
+        lower: String,
+        isDeviceLocked: Boolean,
+        ownerName: String = ""
+    ): AliBrainResult? {
+        val mentionsInstagram = lower.contains("instagram") || lower.contains("इंस्टाग्राम") ||
+            Regex("\\binsta\\b").containsMatchIn(lower) || lower.contains("इंस्टा")
+        val mentionsFacebook = lower.contains("facebook") || lower.contains("फेसबुक") ||
+            Regex("\\bfb\\b").containsMatchIn(lower) || lower.contains("एफबी")
+        val mentionsWhatsApp = lower.contains("whatsapp") || lower.contains("व्हाट्सएप") ||
+            lower.contains("व्हाट्सऐप")
+        val mentionsSocialStudio = lower.contains("social media") || lower.contains("सोशल मीडिया") ||
+            lower.contains("social poster") || lower.contains("auto post") || lower.contains("autopost")
+
+        val hasStoryWord = lower.contains("story") || lower.contains("स्टोरी") ||
+            lower.contains("status") || lower.contains("स्टेटस")
+        val hasVideoPostWord = lower.contains("reel") || lower.contains("रील") ||
+            lower.contains("video post") || lower.contains("वीडियो पोस्ट") ||
+            ((lower.contains("video") || lower.contains("वीडियो")) &&
+                (lower.contains("post") || lower.contains("upload") || lower.contains("share") ||
+                    lower.contains("पोस्ट") || lower.contains("अपलोड") || lower.contains("शेयर") ||
+                    lower.contains("डाल") || lower.contains("लगा") || lower.contains("dal") || lower.contains("lagao")))
+        val hasPostActionWord = hasStoryWord || hasVideoPostWord ||
+            lower.contains("पोस्ट") || lower.contains("अपलोड") ||
+            Regex("\\b(post|upload)\\b").containsMatchIn(lower)
+
+        val anyPlatform = mentionsInstagram || mentionsFacebook || mentionsWhatsApp
+        if (!mentionsSocialStudio && !(anyPlatform && hasPostActionWord) && !(hasStoryWord && (lower.contains("डाल") || lower.contains("लगा") || lower.contains("post") || lower.contains("upload")))) {
+            return null
+        }
+
+        // Ignore plain YouTube search or WhatsApp text message queries without story/video/status
+        if (lower.contains("youtube") || lower.contains("यूट्यूब")) return null
+        if (mentionsWhatsApp && !mentionsInstagram && !mentionsFacebook && !hasStoryWord && !hasVideoPostWord &&
+            (lower.contains("message") || lower.contains("मैसेज") || lower.contains("कॉल") || lower.contains("call"))
+        ) {
+            return null
+        }
+
+        val platforms = buildList {
+            if (mentionsInstagram) add(SocialPlatform.INSTAGRAM)
+            if (mentionsFacebook) add(SocialPlatform.FACEBOOK)
+            if (mentionsWhatsApp) add(SocialPlatform.WHATSAPP)
+        }.ifEmpty { SocialPlatform.entries }
+
+        val postType = if (hasVideoPostWord && !hasStoryWord) {
+            SocialPostType.VIDEO_POST
+        } else {
+            SocialPostType.STORY
+        }
+
+        val captionHint = Regex("(?i)(?:caption|कैप्शन)\\s*[:\\-]?\\s*(.+)$")
+            .find(clean)?.groupValues?.getOrNull(1)?.trim().orEmpty()
+
+        val (target, payload) = SocialMediaEngine.encodeSocialSpec(platforms, postType, captionHint)
+        val platformNames = platforms.joinToString(", ") { it.hindiName }
+        val bossLabel = if (ownerName.isNotBlank()) "$ownerName बॉस" else "बॉस"
+
+        if (isDeviceLocked) {
+            return AliBrainResult(
+                replyText = "$bossLabel, फ़ोन लॉक है — $platformNames पर ${postType.hindiLabel} डालने के लिए कृपया फ़ोन अनलॉक करें।",
+                spokenLanguage = AssistantLanguage.HINDI,
+                actions = listOf(DeviceAction(ActionType.SOCIAL_AUTO_POST, target = target, payload = payload)),
+                suggestions = listOf("बैटरी बताओ", "गाना बजाओ")
+            )
+        }
+
+        return AliBrainResult(
+            replyText = "जी $bossLabel, $platformNames पर ${postType.hindiLabel} अपने आप पोस्ट करने के लिए LEON Social Auto-Poster खोल रहा हूँ — बस वीडियो/फोटो चुनिए!",
+            spokenLanguage = AssistantLanguage.HINDI,
+            actions = listOf(DeviceAction(ActionType.SOCIAL_AUTO_POST, target = target, payload = payload)),
+            suggestions = listOf("इंस्टाग्राम पर वीडियो पोस्ट करो", "व्हाट्सएप स्टेटस डालो")
+        )
+    }
+
+    internal fun routeLifeCompassClause(
+        clean: String,
+        lower: String,
+        isDeviceLocked: Boolean,
+        ownerName: String = ""
+    ): AliBrainResult? {
+        val asksCompass = lower.contains("life compass") ||
+            lower.contains("sahi raah") ||
+            lower.contains("sahi rasta") ||
+            lower.contains("सही राह") ||
+            lower.contains("सही रास्ता") ||
+            lower.contains("इंसान की तरह सोच") ||
+            lower.contains("इंसान के जैसे सोच") ||
+            lower.contains("अपने से सोच") ||
+            lower.contains("सोच समझकर बता") ||
+            lower.contains("wise mentor") ||
+            lower.contains("right path")
+
+        if (!asksCompass) return null
+
+        val bossLabel = if (ownerName.isNotBlank()) "$ownerName बॉस" else "बॉस"
+        val extractedDilemma = clean
+            .replace(
+                Regex("(?i)(?:life\\s+compass|sahi\\s+raah|sahi\\s+rasta|right\\s+path|wise\\s+mentor|सही\\s+राह\\s*(?:कम्पास)?|सही\\s+रास्ता|इंसान\\s+(?:की\\s+तरह|के\\s+जैसे)\\s+सोच(?:ने|कर|ो)?|अपने\\s+से\\s+सोच(?:\\s*समझकर)?|खोलो|खोलिए|दिखाओ|बताओ|open|show|kholo)[:\\-]?"),
+                " "
+            )
+            .replace(Regex("\\s+"), " ")
+            .trim(' ', ',', '.', '!', '?', '।')
+
+        if (isDeviceLocked) {
+            return AliBrainResult(
+                replyText = "$bossLabel, फ़ोन लॉक है — सही राह कम्पास स्क्रीन खोलने के लिए अनलॉक करें। आप चाहें तो बोलकर पूछ सकते हैं, मैं अभी भी सोचकर सही राह बता सकता हूँ।",
+                spokenLanguage = AssistantLanguage.HINDI,
+                actions = listOf(DeviceAction(ActionType.OPEN_LIFE_COMPASS, target = extractedDilemma)),
+                suggestions = listOf("बैटरी बताओ", "गाना बजाओ")
+            )
+        }
+
+        val reply = if (extractedDilemma.length >= 6) {
+            "जी $bossLabel, मैंने आपकी बात को इंसान की तरह गहराई से समझा है — चलिए सही राह कम्पास में इसका पूरा विश्लेषण और सबसे सही कदम देखते हैं।"
+        } else {
+            "जी $bossLabel, मैं अपनी पूरी समझ और विवेक से आपके हालात देखकर सही राह बताने के लिए तैयार हूँ — चलिए सही राह कम्पास खोलते हैं।"
+        }
+        return AliBrainResult(
+            replyText = reply,
+            spokenLanguage = AssistantLanguage.HINDI,
+            actions = listOf(DeviceAction(ActionType.OPEN_LIFE_COMPASS, target = extractedDilemma)),
+            suggestions = listOf("मेरे लिए सही रास्ता सोचो", "मेरी यादें बताओ")
+        )
     }
 }

@@ -44,6 +44,7 @@ import com.example.data.TaskPriority
 import com.example.media.LeonMusicEngine
 import com.example.news.LiveNewsEngine
 import com.example.news.NewsCategory
+import com.example.social.SocialAutoPosterBridge
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -512,6 +513,19 @@ class LeonVoiceService : Service(), TextToSpeech.OnInitListener {
         return km?.isKeyguardLocked == true
     }
 
+    private fun isScreenInteractive(): Boolean {
+        val pm = getSystemService(Context.POWER_SERVICE) as? PowerManager
+        return pm?.isInteractive != false
+    }
+
+    private fun isScreenOffOrLocked(): Boolean = isDeviceLocked() || !isScreenInteractive()
+
+    private fun isAudioInCall(): Boolean {
+        val am = getSystemService(Context.AUDIO_SERVICE) as? android.media.AudioManager ?: return false
+        return am.mode == android.media.AudioManager.MODE_IN_CALL ||
+            am.mode == android.media.AudioManager.MODE_IN_COMMUNICATION
+    }
+
     @SuppressLint("WakelockTimeout")
     private fun ensureWakeLockHeld() {
         try {
@@ -610,7 +624,7 @@ class LeonVoiceService : Service(), TextToSpeech.OnInitListener {
             }
             when {
                 locked && lockScreenModeEnabled && alwaysReadyMode ->
-                    append("Lock-Screen Active • Say \"Hey Leon\" or tap Listen / Music")
+                    append("Lock-Screen Active • Voice Calls, Music & Alerts Ready")
                 alwaysReadyMode && lockScreenModeEnabled ->
                     append("24/7 Lock-Ready (${currentLanguage.label}) • Say \"Hey Leon\"")
                 alwaysReadyMode ->
@@ -683,13 +697,20 @@ class LeonVoiceService : Service(), TextToSpeech.OnInitListener {
             LeonMusicEngine.setDucked(false)
             return
         }
+        if (isAudioInCall()) {
+            LeonMusicEngine.setDucked(false)
+            if (alwaysReadyMode) {
+                scheduleListen(3500L)
+            }
+            return
+        }
         if (LeonSpeaker.isSpeaking.value || VoiceServiceBridge.orbState.value == VoiceOrbState.SPEAKING) {
             if (alwaysReadyMode) {
                 scheduleListen(600L)
             }
             return
         }
-        if (alwaysReadyMode && !lockScreenModeEnabled && isDeviceLocked()) {
+        if (alwaysReadyMode && !lockScreenModeEnabled && isScreenOffOrLocked()) {
             LeonMusicEngine.setDucked(false)
             VoiceServiceBridge.setOrbState(VoiceOrbState.IDLE)
             return
@@ -930,7 +951,7 @@ class LeonVoiceService : Service(), TextToSpeech.OnInitListener {
 
     private fun dispatchCommand(command: String) {
         VoiceServiceBridge.setOrbState(VoiceOrbState.PROCESSING)
-        val canHandleInUi = VoiceServiceBridge.foregroundUiActive.value && !isDeviceLocked()
+        val canHandleInUi = VoiceServiceBridge.foregroundUiActive.value && !isScreenOffOrLocked()
         if (canHandleInUi) {
             VoiceServiceBridge.emitEvent(VoiceServiceEvent.TranscriptCaptured(command))
         } else {
@@ -953,7 +974,7 @@ class LeonVoiceService : Service(), TextToSpeech.OnInitListener {
             val lang = AssistantLanguage.fromCode(prefs.defaultLanguage)
             currentLanguage = lang
             speechSpeed = prefs.voiceSpeed.toFloat().coerceIn(0.5f, 2.0f)
-            val locked = isDeviceLocked()
+            val lockedOrScreenOff = isScreenOffOrLocked()
             val telemetry = executor.readTelemetry()
             val currentNotifications = NotificationBridge.notifications.value
 
@@ -962,7 +983,7 @@ class LeonVoiceService : Service(), TextToSpeech.OnInitListener {
                     lower.contains(routine.triggerPhrase.lowercase(Locale.ROOT))
             }
 
-            // 1. Check instant local command router first (zero latency, works offline & when locked!)
+            // 1. Check instant local command router first (zero latency, works offline & when screen is off!)
             if (matchedRoutine == null) {
                 val fastResult = LocalCommandRouter.tryFastPath(
                     rawPrompt = clean,
@@ -970,13 +991,19 @@ class LeonVoiceService : Service(), TextToSpeech.OnInitListener {
                     telemetry = telemetry,
                     notifications = currentNotifications,
                     tasks = snapshot.tasks,
-                    isDeviceLocked = locked,
+                    isDeviceLocked = lockedOrScreenOff,
                     ownerName = prefs.ownerName,
                     memories = snapshot.memories
                 )
                 if (fastResult != null) {
                     repository.addConversationMessage("user", clean, lang)
-                    applyAutonomousBrainResult(fastResult, lang, locked, telemetry.writeSettingsGranted)
+                    applyAutonomousBrainResult(
+                        brainResult = fastResult,
+                        lang = lang,
+                        locked = lockedOrScreenOff,
+                        canWriteSettings = telemetry.writeSettingsGranted,
+                        memories = snapshot.memories
+                    )
                     return@launch
                 }
             }
@@ -1004,7 +1031,13 @@ class LeonVoiceService : Service(), TextToSpeech.OnInitListener {
             )
 
             result.onSuccess { brainResult ->
-                applyAutonomousBrainResult(brainResult, lang, locked, telemetry.writeSettingsGranted)
+                applyAutonomousBrainResult(
+                    brainResult = brainResult,
+                    lang = lang,
+                    locked = lockedOrScreenOff,
+                    canWriteSettings = telemetry.writeSettingsGranted,
+                    memories = snapshot.memories
+                )
             }.onFailure { err ->
                 // 2. Offline / error recovery via LocalCommandRouter before returning error
                 val offlineRecovery = LocalCommandRouter.tryFallback(
@@ -1013,15 +1046,21 @@ class LeonVoiceService : Service(), TextToSpeech.OnInitListener {
                     telemetry = telemetry,
                     notifications = currentNotifications,
                     tasks = snapshot.tasks,
-                    isDeviceLocked = locked,
+                    isDeviceLocked = lockedOrScreenOff,
                     ownerName = prefs.ownerName,
                     memories = snapshot.memories
                 )
                 if (offlineRecovery != null) {
-                    applyAutonomousBrainResult(offlineRecovery, lang, locked, telemetry.writeSettingsGranted)
+                    applyAutonomousBrainResult(
+                        brainResult = offlineRecovery,
+                        lang = lang,
+                        locked = lockedOrScreenOff,
+                        canWriteSettings = telemetry.writeSettingsGranted,
+                        memories = snapshot.memories
+                    )
                 } else {
                     val errMsg = AliAiBrain.describeError(err)
-                    val failText = "माफ़ कीजिए बॉस, ALI AI अभी नेटवर्क से जुड़ नहीं पाई ($errMsg)। आप ऑफ़लाइन में भी 'गाना बजाओ', 'टॉर्च ऑन', 'वॉल्यूम बढ़ाओ', 'बैटरी बताओ' या 'अलर्ट सुनाओ' बोल सकते हैं।"
+                    val failText = "माफ़ कीजिए बॉस, ALI AI अभी नेटवर्क से जुड़ नहीं पाई ($errMsg)। आप ऑफ़लाइन में भी 'गाना बजाओ', 'टॉर्च ऑन', 'कॉल लगाओ', 'वॉल्यूम बढ़ाओ' या 'बैटरी बताओ' बोल सकते हैं।"
                     repository.addConversationMessage(
                         role = "model",
                         text = failText,
@@ -1029,7 +1068,7 @@ class LeonVoiceService : Service(), TextToSpeech.OnInitListener {
                         actionSummary = "ERROR"
                     )
                     withContext(Dispatchers.Main) {
-                        speakText("माफ़ कीजिए बॉस, इंटरनेट समस्या है — लेकिन म्यूजिक, टॉर्च और वॉल्यूम ऑफ़लाइन भी चल रहे हैं।", AssistantLanguage.HINDI)
+                        speakText("माफ़ कीजिए बॉस, इंटरनेट समस्या है — लेकिन कॉलिंग, म्यूजिक, टॉर्च और वॉल्यूम ऑफ़लाइन भी चल रहे हैं।", AssistantLanguage.HINDI)
                     }
                 }
             }
@@ -1040,7 +1079,8 @@ class LeonVoiceService : Service(), TextToSpeech.OnInitListener {
         brainResult: AliBrainResult,
         lang: AssistantLanguage,
         locked: Boolean,
-        canWriteSettings: Boolean
+        canWriteSettings: Boolean,
+        memories: List<com.example.data.MemoryItem> = emptyList()
     ) {
         val actionSummary = brainResult.actions
             .filter { it.type != ActionType.SPEAK_ONLY }
@@ -1058,15 +1098,18 @@ class LeonVoiceService : Service(), TextToSpeech.OnInitListener {
         val otherActions = brainResult.actions.filter { it.type != ActionType.PLAY_MUSIC }
 
         if (preMusicActions.isNotEmpty()) {
-            executeBackgroundActions(preMusicActions, lang, locked, canWriteSettings)
+            executeBackgroundActions(preMusicActions, lang, locked, canWriteSettings, memories)
         }
 
-        withContext(Dispatchers.Main) {
-            speakText(brainResult.replyText, brainResult.spokenLanguage, TextToSpeech.QUEUE_FLUSH)
+        val hasOutgoingCall = otherActions.any { it.type == ActionType.MAKE_CALL }
+        if (!hasOutgoingCall) {
+            withContext(Dispatchers.Main) {
+                speakText(brainResult.replyText, brainResult.spokenLanguage, TextToSpeech.QUEUE_FLUSH)
+            }
         }
 
         if (otherActions.isNotEmpty()) {
-            executeBackgroundActions(otherActions, lang, locked, canWriteSettings)
+            executeBackgroundActions(otherActions, lang, locked, canWriteSettings, memories)
         }
     }
 
@@ -1074,7 +1117,8 @@ class LeonVoiceService : Service(), TextToSpeech.OnInitListener {
         actions: List<DeviceAction>,
         language: AssistantLanguage,
         isLocked: Boolean,
-        canWriteSettings: Boolean
+        canWriteSettings: Boolean,
+        memories: List<com.example.data.MemoryItem> = emptyList()
     ) {
         var lockNoticeSpoken = false
         for (action in actions) {
@@ -1086,7 +1130,8 @@ class LeonVoiceService : Service(), TextToSpeech.OnInitListener {
             val lockDecision = LockScreenPolicy.evaluate(
                 action = action,
                 isDeviceLocked = isLocked,
-                canWriteSettings = canWriteSettings
+                canWriteSettings = canWriteSettings,
+                allowLockScreenCalls = lockScreenModeEnabled
             )
             if (!lockDecision.allowed) {
                 if (!lockNoticeSpoken) {
@@ -1176,6 +1221,42 @@ class LeonVoiceService : Service(), TextToSpeech.OnInitListener {
                     repository.addConversationMessage("model", digest, AssistantLanguage.HINDI, "FETCH_NEWS")
                     withContext(Dispatchers.Main) {
                         speakText(digest, AssistantLanguage.HINDI, TextToSpeech.QUEUE_ADD)
+                    }
+                }
+                ActionType.MAKE_CALL -> {
+                    withContext(Dispatchers.Main) {
+                        cancelListenTimers()
+                        stopRecognizerInternal()
+                    }
+                    val callOutcome = executor.makeCall(
+                        target = action.target,
+                        memories = memories,
+                        allowBackgroundDirectOnly = isLocked
+                    )
+                    if (callOutcome.success) {
+                        withContext(Dispatchers.Main) {
+                            VoiceServiceBridge.setOrbState(VoiceOrbState.IDLE)
+                            if (alwaysReadyMode) {
+                                scheduleListen(7_000L)
+                            }
+                        }
+                    } else {
+                        repository.addConversationMessage("model", callOutcome.logMessage, AssistantLanguage.HINDI, "CALL_FAILED")
+                        withContext(Dispatchers.Main) {
+                            speakText(callOutcome.logMessage, AssistantLanguage.HINDI, TextToSpeech.QUEUE_FLUSH)
+                        }
+                    }
+                }
+                ActionType.SOCIAL_AUTO_POST -> {
+                    SocialAutoPosterBridge.requestOpenStudio(action.target, action.payload)
+                    withContext(Dispatchers.Main) {
+                        val openStudioIntent = Intent(applicationContext, MainActivity::class.java).apply {
+                            setAction("com.example.action.OPEN_SOCIAL_POSTER")
+                            putExtra("extra_social_target", action.target)
+                            putExtra("extra_social_payload", action.payload)
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                        }
+                        runCatching { startActivity(openStudioIntent) }
                     }
                 }
                 else -> executor.execute(action)
@@ -1326,8 +1407,11 @@ class LeonVoiceService : Service(), TextToSpeech.OnInitListener {
             return
         }
         if (alwaysReadyMode || awaitingActiveCommand) {
-            if (alwaysReadyMode && !lockScreenModeEnabled && isDeviceLocked()) {
+            if (alwaysReadyMode && !lockScreenModeEnabled && isScreenOffOrLocked()) {
                 VoiceServiceBridge.setOrbState(VoiceOrbState.IDLE)
+            } else if (isAudioInCall()) {
+                VoiceServiceBridge.setOrbState(VoiceOrbState.IDLE)
+                scheduleListen(3500L)
             } else {
                 VoiceServiceBridge.setOrbState(
                     if (awaitingActiveCommand) VoiceOrbState.ACTIVE_LISTENING else VoiceOrbState.WAKE_LISTENING
@@ -1357,6 +1441,7 @@ class LeonVoiceService : Service(), TextToSpeech.OnInitListener {
         tts?.stop()
         LeonMusicEngine.setTtsSpeaking(false)
         LeonMusicEngine.stopOrPause(applicationContext, stopCompletely = true)
+        SocialAutoPosterBridge.clearJob()
         releaseWakeLock()
         VoiceServiceBridge.setRunning(false)
         VoiceServiceBridge.setOrbState(VoiceOrbState.IDLE)

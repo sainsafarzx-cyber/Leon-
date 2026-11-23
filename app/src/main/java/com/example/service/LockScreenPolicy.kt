@@ -30,7 +30,6 @@ object LockScreenPolicy {
     )
 
     private val communicationSensitiveActions = setOf(
-        ActionType.MAKE_CALL,
         ActionType.SEND_WHATSAPP,
         ActionType.SEND_SMS
     )
@@ -38,7 +37,8 @@ object LockScreenPolicy {
     fun evaluate(
         action: DeviceAction,
         isDeviceLocked: Boolean,
-        canWriteSettings: Boolean = false
+        canWriteSettings: Boolean = false,
+        allowLockScreenCalls: Boolean = true
     ): LockScreenDecision {
         if (!isDeviceLocked) {
             return LockScreenDecision(allowed = true)
@@ -46,13 +46,23 @@ object LockScreenPolicy {
         if (action.type in lockSafeActions) {
             return LockScreenDecision(allowed = true)
         }
+        if (action.type == ActionType.MAKE_CALL && allowLockScreenCalls) {
+            return LockScreenDecision(allowed = true)
+        }
         if (action.type == ActionType.SET_BRIGHTNESS && canWriteSettings) {
             return LockScreenDecision(allowed = true)
         }
-        val reason = if (action.type in communicationSensitiveActions || action.requiresConfirmation) {
-            "बॉस, फ़ोन लॉक है — सुरक्षा के लिए कॉल, WhatsApp या SMS अनलॉक करने के बाद ही चलेगा।"
-        } else {
-            "बॉस, फ़ोन लॉक है — यह ऐप या सेटिंग खोलने के लिए कृपया फ़ोन अनलॉक करें।"
+        val reason = when {
+            action.type == ActionType.MAKE_CALL ->
+                "बॉस, लॉक-स्क्रीन कॉलिंग सेटिंग बंद है — कृपया Lock-Screen Mode चालू करें या फ़ोन अनलॉक करें।"
+            action.type == ActionType.SOCIAL_AUTO_POST ->
+                "बॉस, फ़ोन लॉक है — Instagram, Facebook या WhatsApp पर स्टोरी/वीडियो पोस्ट करने के लिए कृपया फ़ोन अनलॉक करें।"
+            action.type == ActionType.OPEN_LIFE_COMPASS ->
+                "बॉस, फ़ोन लॉक है — सही राह कम्पास स्क्रीन खोलने के लिए कृपया फ़ोन अनलॉक करें।"
+            action.type in communicationSensitiveActions || action.requiresConfirmation ->
+                "बॉस, फ़ोन लॉक है — सुरक्षा के लिए WhatsApp या SMS अनलॉक करने के बाद ही चलेगा।"
+            else ->
+                "बॉस, फ़ोन लॉक है — यह ऐप या सेटिंग खोलने के लिए कृपया फ़ोन अनलॉक करें।"
         }
         return LockScreenDecision(allowed = false, reasonHindi = reason)
     }

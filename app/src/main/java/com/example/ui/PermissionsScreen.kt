@@ -178,7 +178,7 @@ fun PermissionsScreen(
             PermissionRowCard(
                 icon = Icons.Rounded.Contacts,
                 title = "Contacts Lookup",
-                description = "Resolves contact phone numbers for confirmed calls and WhatsApp.",
+                description = "Resolves Hindi/English contact names for voice calls even when the screen is off.",
                 granted = telemetry.contactsPermissionGranted,
                 actionLabel = "Grant Contacts",
                 onAction = { singlePermissionLauncher.launch(Manifest.permission.READ_CONTACTS) }
@@ -188,8 +188,8 @@ fun PermissionsScreen(
         item {
             PermissionRowCard(
                 icon = Icons.Rounded.Call,
-                title = "Direct Calling",
-                description = "Places calls after confirmation (otherwise opens Phone dialer).",
+                title = "Direct Calling (Screen-Off Voice Call)",
+                description = "Required to place voice calls directly after 'Hey Leon', even when the screen is off.",
                 granted = telemetry.phonePermissionGranted,
                 actionLabel = "Grant Phone",
                 onAction = { singlePermissionLauncher.launch(Manifest.permission.CALL_PHONE) }

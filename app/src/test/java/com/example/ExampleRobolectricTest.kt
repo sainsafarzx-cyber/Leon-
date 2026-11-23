@@ -12,6 +12,7 @@ import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.test.performTextInput
 import androidx.test.core.app.ApplicationProvider
 import com.example.ai.AliAiBrain
+import com.example.ai.HumanWisdomEngine
 import com.example.ai.LocalCommandRouter
 import com.example.data.ActionType
 import com.example.data.AssistantLanguage
@@ -27,6 +28,12 @@ import com.example.data.MemoryItem
 import com.example.media.LeonMusicEngine
 import com.example.sensors.SixthSenseEngine
 import com.example.service.LockScreenPolicy
+import com.example.social.SocialAutoPosterBridge
+import com.example.social.SocialMediaEngine
+import com.example.social.SocialPlatform
+import com.example.social.SocialPostJob
+import com.example.social.SocialPostType
+import com.example.social.StagedSocialMedia
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -201,12 +208,20 @@ class ExampleRobolectricTest {
             ).allowed
         )
 
-        val callDecision = LockScreenPolicy.evaluate(
-            DeviceAction(ActionType.MAKE_CALL, target = "Mom", requiresConfirmation = true),
-            isDeviceLocked = true
+        val callDecisionAllowed = LockScreenPolicy.evaluate(
+            DeviceAction(ActionType.MAKE_CALL, target = "Mom", requiresConfirmation = false),
+            isDeviceLocked = true,
+            allowLockScreenCalls = true
         )
-        assertFalse(callDecision.allowed)
-        assertTrue(callDecision.reasonHindi.contains("अनलॉक"))
+        assertTrue(callDecisionAllowed.allowed)
+
+        val callDecisionBlocked = LockScreenPolicy.evaluate(
+            DeviceAction(ActionType.MAKE_CALL, target = "Mom", requiresConfirmation = true),
+            isDeviceLocked = true,
+            allowLockScreenCalls = false
+        )
+        assertFalse(callDecisionBlocked.allowed)
+        assertTrue(callDecisionBlocked.reasonHindi.contains("बंद"))
 
         val whatsappDecision = LockScreenPolicy.evaluate(
             DeviceAction(ActionType.SEND_WHATSAPP, target = "Rahul", payload = "Hi", requiresConfirmation = true),
@@ -850,6 +865,338 @@ class ExampleRobolectricTest {
         composeRule.onNodeWithTag("vision_back_button").performClick()
         composeRule.waitForIdle()
 
+        composeRule.onNodeWithTag("voice_orb_button").assertIsDisplayed()
+    }
+
+    @Test
+    fun `voice calling works offline and while locked with hindi transliteration and memory contact lookup`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val telemetry = DeviceTelemetry(batteryPercent = 82)
+
+        val hindiCall = LocalCommandRouter.tryFastPath(
+            rawPrompt = "मम्मी को कॉल लगाओ",
+            defaultLanguage = AssistantLanguage.HINDI,
+            telemetry = telemetry,
+            notifications = emptyList(),
+            tasks = emptyList(),
+            isDeviceLocked = true
+        )
+        assertEquals(ActionType.MAKE_CALL, hindiCall?.actions?.firstOrNull()?.type)
+        assertEquals("मम्मी", hindiCall?.actions?.firstOrNull()?.target)
+        assertFalse(hindiCall!!.actions.first().requiresConfirmation)
+
+        val numberCall = LocalCommandRouter.tryFastPath(
+            rawPrompt = "9876543210 पर कॉल करो",
+            defaultLanguage = AssistantLanguage.HINDI,
+            telemetry = telemetry,
+            notifications = emptyList(),
+            tasks = emptyList(),
+            isDeviceLocked = true
+        )
+        assertEquals(ActionType.MAKE_CALL, numberCall?.actions?.firstOrNull()?.type)
+        assertEquals("9876543210", numberCall?.actions?.firstOrNull()?.target)
+
+        val englishCall = LocalCommandRouter.tryFastPath(
+            rawPrompt = "Call Rahul",
+            defaultLanguage = AssistantLanguage.ENGLISH,
+            telemetry = telemetry,
+            notifications = emptyList(),
+            tasks = emptyList(),
+            isDeviceLocked = true
+        )
+        assertEquals(ActionType.MAKE_CALL, englishCall?.actions?.firstOrNull()?.type)
+        assertEquals("Rahul", englishCall?.actions?.firstOrNull()?.target)
+
+        assertTrue(
+            LockScreenPolicy.evaluate(
+                action = DeviceAction(ActionType.MAKE_CALL, target = "मम्मी"),
+                isDeviceLocked = true,
+                allowLockScreenCalls = true
+            ).allowed
+        )
+        assertFalse(
+            LockScreenPolicy.evaluate(
+                action = DeviceAction(ActionType.MAKE_CALL, target = "मम्मी"),
+                isDeviceLocked = true,
+                allowLockScreenCalls = false
+            ).allowed
+        )
+        assertFalse(
+            LockScreenPolicy.evaluate(
+                action = DeviceAction(ActionType.SEND_WHATSAPP, target = "मम्मी", payload = "hi"),
+                isDeviceLocked = true,
+                allowLockScreenCalls = true
+            ).allowed
+        )
+
+        val executor = com.example.automation.LeonActionExecutor(context)
+        assertEquals("rahul", executor.transliterateDevanagari("राहुल"))
+        assertEquals("9876543210", executor.resolvePhoneNumber("९८७६५४३२१०"))
+
+        val contactMemories = listOf(
+            MemoryItem(
+                id = 10L,
+                memoryKey = "Mom number",
+                memoryValue = "Mom ka number 9123456789 hai",
+                category = MemoryCategory.CONTACT.wireValue,
+                isPermanent = true
+            )
+        )
+        assertEquals("9123456789", executor.resolvePhoneNumber("मम्मी", contactMemories))
+
+        // Without CALL_PHONE permission in background, returns clear Hindi guidance instead of crashing
+        val outcome = executor.makeCall("9123456789", allowBackgroundDirectOnly = true)
+        assertFalse(outcome.success)
+        assertTrue(outcome.logMessage.contains("Direct Calling"))
+    }
+
+    @Test
+    fun `social auto-poster routes hindi commands manages multi-app queue and stays lock-safe`() {
+        val telemetry = DeviceTelemetry()
+
+        val allStory = LocalCommandRouter.tryFastPath(
+            rawPrompt = "इंस्टाग्राम फेसबुक व्हाट्सएप पर स्टोरी डालो",
+            defaultLanguage = AssistantLanguage.HINDI,
+            telemetry = telemetry,
+            notifications = emptyList(),
+            tasks = emptyList()
+        )
+        assertEquals(ActionType.SOCIAL_AUTO_POST, allStory?.actions?.firstOrNull()?.type)
+        val (storyPlatforms, storyType, _) = SocialMediaEngine.parseSocialSpec(
+            allStory?.actions?.firstOrNull()?.target.orEmpty(),
+            allStory?.actions?.firstOrNull()?.payload.orEmpty()
+        )
+        assertEquals(
+            listOf(SocialPlatform.INSTAGRAM, SocialPlatform.FACEBOOK, SocialPlatform.WHATSAPP),
+            storyPlatforms
+        )
+        assertEquals(SocialPostType.STORY, storyType)
+
+        val reelCmd = LocalCommandRouter.tryFastPath(
+            rawPrompt = "Instagram aur Facebook par video post karo",
+            defaultLanguage = AssistantLanguage.HINGLISH,
+            telemetry = telemetry,
+            notifications = emptyList(),
+            tasks = emptyList()
+        )
+        assertEquals(ActionType.SOCIAL_AUTO_POST, reelCmd?.actions?.firstOrNull()?.type)
+        val (reelPlatforms, reelType, _) = SocialMediaEngine.parseSocialSpec(
+            reelCmd?.actions?.firstOrNull()?.target.orEmpty(),
+            reelCmd?.actions?.firstOrNull()?.payload.orEmpty()
+        )
+        assertEquals(listOf(SocialPlatform.INSTAGRAM, SocialPlatform.FACEBOOK), reelPlatforms)
+        assertEquals(SocialPostType.VIDEO_POST, reelType)
+
+        // Lock-screen policy blocks social posting when phone is locked
+        val lockDecision = LockScreenPolicy.evaluate(
+            action = DeviceAction(ActionType.SOCIAL_AUTO_POST),
+            isDeviceLocked = true
+        )
+        assertFalse(lockDecision.allowed)
+        assertTrue(lockDecision.reasonHindi.contains("अनलॉक"))
+
+        // Queue bridge progression: Instagram -> Facebook -> Done
+        SocialAutoPosterBridge.clearJob()
+        val dummyMedia = StagedSocialMedia(
+            uri = android.net.Uri.parse("content://com.example.fileprovider/social_media/demo.mp4"),
+            mimeType = "video/mp4",
+            displayName = "demo.mp4",
+            isVideo = true,
+            sizeBytes = 2048L
+        )
+        val job = SocialPostJob(
+            id = "job-1",
+            platforms = listOf(SocialPlatform.INSTAGRAM, SocialPlatform.FACEBOOK),
+            postType = SocialPostType.STORY,
+            caption = "Boss update",
+            autoTapEnabled = true,
+            media = dummyMedia
+        )
+        SocialAutoPosterBridge.armJob(job)
+        assertNotNull(SocialAutoPosterBridge.isStepArmedForPackage("com.instagram.android"))
+        assertNull(SocialAutoPosterBridge.isStepArmedForPackage("com.facebook.katana"))
+
+        SocialAutoPosterBridge.markCurrentStepAutoPublished(SocialPlatform.INSTAGRAM, "Shared Story")
+        assertEquals(SocialPlatform.FACEBOOK, SocialAutoPosterBridge.activeJob.value?.currentPlatform)
+        assertNotNull(SocialAutoPosterBridge.isStepArmedForPackage("com.facebook.katana"))
+
+        SocialAutoPosterBridge.markCurrentStepAutoPublished(SocialPlatform.FACEBOOK, "Shared FB Story")
+        assertNull(SocialAutoPosterBridge.activeJob.value)
+        SocialAutoPosterBridge.clearJob()
+    }
+
+    @Test
+    fun `hud social button opens social auto-poster studio generates caption and navigates back`() {
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("hud_social_button").performClick()
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithTag("social_screen_title").assertIsDisplayed()
+        composeRule.onNodeWithTag("social_platform_instagram").assertIsDisplayed()
+        composeRule.onNodeWithTag("social_platform_facebook").assertIsDisplayed()
+        composeRule.onNodeWithTag("social_platform_whatsapp").assertIsDisplayed()
+
+        // Toggle Video / Reel Post mode
+        composeRule.onNodeWithTag("social_type_video_post").performClick()
+        composeRule.waitForIdle()
+
+        // Scroll to Pick Video button (item 3) and AI Caption card (item 4)
+        composeRule.onNodeWithTag("social_list").performScrollToIndex(3)
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("social_pick_video_button").assertIsDisplayed()
+
+        composeRule.onNodeWithTag("social_list").performScrollToIndex(4)
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("social_ai_caption_button").assertIsDisplayed()
+        composeRule.onNodeWithTag("social_caption_input").performTextInput("Morning ride")
+        composeRule.waitForIdle()
+
+        // Scroll back up to header and navigate back to HUD
+        composeRule.onNodeWithTag("social_list").performScrollToIndex(0)
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("social_back_button").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("command_input").assertIsDisplayed()
+    }
+
+    @Test
+    fun `human wisdom engine thinks proactively and parses reflection metadata accurately`() {
+        val telemetry = DeviceTelemetry(batteryPercent = 82)
+        val pendingTasks = listOf(
+            DailyTask(id = 1L, title = "Finish project report", priority = "high", completed = false),
+            DailyTask(id = 2L, title = "Review notes", priority = "medium", completed = false)
+        )
+
+        // Late-night well-being guidance
+        val nightGuidance = HumanWisdomEngine.buildProactiveGuidance(
+            ownerName = "अली",
+            tasks = pendingTasks,
+            memories = emptyList(),
+            notifications = emptyList(),
+            telemetry = telemetry,
+            hourOfDay = 23
+        )
+        assertEquals("Care & Rest", nightGuidance.toneBadge)
+        assertTrue(nightGuidance.headline.contains("अली बॉस"))
+        assertTrue(nightGuidance.rightPathNudge.contains("नींद"))
+
+        // High-priority task focus guidance during daytime
+        val dayFocusGuidance = HumanWisdomEngine.buildProactiveGuidance(
+            ownerName = "अली",
+            tasks = pendingTasks,
+            memories = emptyList(),
+            notifications = emptyList(),
+            telemetry = telemetry,
+            hourOfDay = 14
+        )
+        assertEquals("Deep Focus", dayFocusGuidance.toneBadge)
+        assertTrue(dayFocusGuidance.rightPathNudge.contains("Finish project report"))
+
+        // Low-battery mindful pause guidance
+        val lowBattGuidance = HumanWisdomEngine.buildProactiveGuidance(
+            ownerName = "अली",
+            tasks = emptyList(),
+            memories = emptyList(),
+            notifications = emptyList(),
+            telemetry = DeviceTelemetry(batteryPercent = 12, charging = false),
+            hourOfDay = 15
+        )
+        assertEquals("Mindful Pause", lowBattGuidance.toneBadge)
+
+        // Dilemma analysis for anger/impulse
+        val angerAnalysis = HumanWisdomEngine.analyzeUserSituationOffline(
+            query = "मुझे बहुत गुस्सा आ रहा है क्या करूँ",
+            ownerName = "अली",
+            tasks = pendingTasks,
+            memories = emptyList(),
+            language = AssistantLanguage.HINDI
+        )
+        assertTrue(angerAnalysis.rightPathDecision.contains("सही राह"))
+        assertEquals(3, angerAnalysis.actionableSteps.size)
+        assertFalse(angerAnalysis.fromCloudAi)
+
+        // AliAiBrain structured parser extracts human reflection fields
+        val brain = AliAiBrain()
+        val parsedWithReflection = brain.parseStructuredResult(
+            """
+            {
+              "replyText": "बॉस, अभी शांत होकर सोचना सही रहेगा।",
+              "spokenLanguage": "hi",
+              "emotionalTone": "Empathetic Mentor",
+              "innerThought": "मैं आपकी थकान और उलझन समझ रहा हूँ।",
+              "rightPathAdvice": "सही राह: आज रात आराम करें और कल सुबह तय करें।",
+              "actions": [{"type": "SPEAK_ONLY", "target": "", "payload": "", "requiresConfirmation": false}]
+            }
+            """.trimIndent(),
+            AssistantLanguage.HINDI
+        )
+        assertEquals("Empathetic Mentor", parsedWithReflection.emotionalTone)
+        assertTrue(parsedWithReflection.innerThought.contains("उलझन"))
+        assertTrue(parsedWithReflection.rightPathAdvice.contains("सही राह"))
+
+        // LocalCommandRouter routes Sahi Raah & Human Thinking requests cleanly
+        val compassRoute = LocalCommandRouter.tryFastPath(
+            rawPrompt = "इंसान के जैसे सोचो और सही राह बताओ",
+            defaultLanguage = AssistantLanguage.HINDI,
+            telemetry = telemetry,
+            notifications = emptyList(),
+            tasks = pendingTasks,
+            isDeviceLocked = false
+        )
+        assertEquals(ActionType.OPEN_LIFE_COMPASS, compassRoute?.actions?.firstOrNull()?.type)
+
+        // LockScreenPolicy requires unlock before opening full Life Compass UI
+        assertFalse(
+            LockScreenPolicy.evaluate(
+                DeviceAction(ActionType.OPEN_LIFE_COMPASS),
+                isDeviceLocked = true
+            ).allowed
+        )
+        assertTrue(
+            LockScreenPolicy.evaluate(
+                DeviceAction(ActionType.OPEN_LIFE_COMPASS),
+                isDeviceLocked = false
+            ).allowed
+        )
+    }
+
+    @Test
+    fun `hud compass button opens life compass analyzes dilemma adds task step and returns`() {
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("hud_compass_button").performScrollTo().assertIsDisplayed().performClick()
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithTag("compass_screen_title").assertIsDisplayed()
+        composeRule.onNodeWithTag("compass_proactive_card").assertIsDisplayed()
+
+        // Scroll to dilemma input card (Item 2), enter a dilemma, and trigger deliberation
+        composeRule.onNodeWithTag("compass_list").performScrollToIndex(2)
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("compass_input").performTextInput("मुझे अभी बहुत गुस्सा आ रहा है, क्या करूँ?")
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("compass_analyze_button").performClick()
+
+        composeRule.waitUntil(timeoutMillis = 25_000) {
+            composeRule.onAllNodesWithText("सही राह (THE RIGHT PATH)")
+                .fetchSemanticsNodes()
+                .isNotEmpty() ||
+                composeRule.onAllNodesWithText("Right Path", substring = true)
+                    .fetchSemanticsNodes()
+                    .isNotEmpty()
+        }
+
+        // Scroll to result card (Item 3) and add the first actionable step to Daily Tasks
+        composeRule.onNodeWithTag("compass_list").performScrollToIndex(3)
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("compass_result_card").assertIsDisplayed()
+        composeRule.onNodeWithTag("compass_add_task_0").performScrollTo().assertIsDisplayed().performClick()
+        composeRule.waitForIdle()
+
+        // Scroll back to header (Item 0) and return to HUD
+        composeRule.onNodeWithTag("compass_list").performScrollToIndex(0)
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("compass_back_button").performClick()
+        composeRule.waitForIdle()
         composeRule.onNodeWithTag("voice_orb_button").assertIsDisplayed()
     }
 }

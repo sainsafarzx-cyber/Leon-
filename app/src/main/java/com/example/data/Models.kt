@@ -132,6 +132,8 @@ enum class ActionType {
     FETCH_NEWS,
     TOGGLE_INTERNET,
     OPEN_OFFLINE_VISION,
+    SOCIAL_AUTO_POST,
+    OPEN_LIFE_COMPASS,
     EMERGENCY_STOP
 }
 
@@ -164,7 +166,53 @@ data class AliBrainResult(
     val spokenLanguage: AssistantLanguage,
     val actions: List<DeviceAction>,
     val memoryProposal: MemoryProposal? = null,
-    val suggestions: List<String> = emptyList()
+    val suggestions: List<String> = emptyList(),
+    val emotionalTone: String = "",
+    val innerThought: String = "",
+    val rightPathAdvice: String = ""
+)
+
+@Immutable
+data class HumanReflectionBanner(
+    val emotionalTone: String,
+    val innerThought: String,
+    val rightPathAdvice: String,
+    val sourceQuery: String = ""
+)
+
+@Immutable
+data class LifeCompassAnalysis(
+    val query: String,
+    val emotionalTone: String,
+    val emotionalUnderstanding: String,
+    val prosConsAnalysis: String,
+    val rightPathDecision: String,
+    val actionableSteps: List<String>,
+    val gentleWarning: String,
+    val spokenSummary: String,
+    val fromCloudAi: Boolean = true,
+    val createdAtMillis: Long = System.currentTimeMillis()
+)
+
+@Immutable
+data class ProactiveLifeGuidance(
+    val headline: String,
+    val observation: String,
+    val rightPathNudge: String,
+    val recommendedStep: String,
+    val suggestedFocusMinutes: Int = 25,
+    val toneBadge: String = "Caring Mentor",
+    val fromCloudAi: Boolean = false
+)
+
+@Immutable
+data class LifeCompassUiState(
+    val queryInput: String = "",
+    val isThinking: Boolean = false,
+    val isAutoThinking: Boolean = false,
+    val proactiveGuidance: ProactiveLifeGuidance? = null,
+    val currentAnalysis: LifeCompassAnalysis? = null,
+    val errorMessage: String? = null
 )
 
 @Immutable

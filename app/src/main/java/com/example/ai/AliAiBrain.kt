@@ -9,9 +9,11 @@ import com.example.data.CapturedNotification
 import com.example.data.ConversationMessage
 import com.example.data.DeviceAction
 import com.example.data.DeviceTelemetry
+import com.example.data.LifeCompassAnalysis
 import com.example.data.MemoryCategory
 import com.example.data.MemoryItem
 import com.example.data.MemoryProposal
+import com.example.data.ProactiveLifeGuidance
 import com.google.firebase.Firebase
 import com.google.firebase.ai.ai
 import com.google.firebase.ai.type.GenerativeBackend
@@ -72,11 +74,23 @@ class AliAiBrain {
     private val responseSchemaObj = Schema.obj(
         properties = mapOf(
             "replyText" to Schema.string(
-                description = "Natural, intelligent, friendly, futuristic LEON AI reply in Hindi, English, or Hinglish."
+                description = "Natural, empathetic, human-like, principled LEON AI reply in Hindi, English, or Hinglish."
             ),
             "spokenLanguage" to Schema.enumeration(
                 values = listOf("hi", "en", "hinglish"),
                 description = "Language code of replyText."
+            ),
+            "emotionalTone" to Schema.string(
+                description = "Concise label of the user's inferred emotional state (e.g., 'Calm', 'Stressed', 'Confused', 'Angry', 'Motivated').",
+                nullable = true
+            ),
+            "innerThought" to Schema.string(
+                description = "1-sentence empathetic human-like inner reflection showing what LEON understood beneath the user's words.",
+                nullable = true
+            ),
+            "rightPathAdvice" to Schema.string(
+                description = "Optional wise, honest 'Sahi Raah / Right Path' advice guiding the user toward long-term peace, integrity, health, or clarity when relevant.",
+                nullable = true
             ),
             "actions" to Schema.array(
                 items = actionSchema,
@@ -89,17 +103,78 @@ class AliAiBrain {
                 nullable = true
             )
         ),
-        optionalProperties = listOf("memoryProposal", "suggestions")
+        optionalProperties = listOf(
+            "emotionalTone",
+            "innerThought",
+            "rightPathAdvice",
+            "memoryProposal",
+            "suggestions"
+        )
+    )
+
+    private val lifeCompassSchema = Schema.obj(
+        properties = mapOf(
+            "emotionalTone" to Schema.string(
+                description = "Short label describing the user's emotion or dilemma (in the requested language)."
+            ),
+            "emotionalUnderstanding" to Schema.string(
+                description = "Warm, human-like validation showing deep understanding of feelings and unspoken worries."
+            ),
+            "prosConsAnalysis" to Schema.string(
+                description = "Balanced bullet comparison of short-term impulse vs long-term consequences."
+            ),
+            "rightPathDecision" to Schema.string(
+                description = "Clear, principled, honest 'Right Path (सही राह)' recommendation that prioritizes long-term integrity, health, relationships, and growth."
+            ),
+            "actionableSteps" to Schema.array(
+                items = Schema.string(),
+                description = "Exactly 3 concrete, realistic, positive steps the user can start today."
+            ),
+            "gentleWarning" to Schema.string(
+                description = "One caring caution about a trap or impulse to avoid."
+            ),
+            "spokenSummary" to Schema.string(
+                description = "Warm 2-3 sentence spoken mentor message directly addressing Boss."
+            )
+        )
+    )
+
+    private val proactiveGuidanceSchema = Schema.obj(
+        properties = mapOf(
+            "headline" to Schema.string(
+                description = "Short caring headline addressing Boss by name if available."
+            ),
+            "observation" to Schema.string(
+                description = "Thoughtful observation connecting time of day, pending tasks, goals, and stress load."
+            ),
+            "rightPathNudge" to Schema.string(
+                description = "Proactive right-path wisdom explaining what truly matters right now."
+            ),
+            "recommendedStep" to Schema.string(
+                description = "Single clearest next task/habit step the user can take right now."
+            ),
+            "suggestedFocusMinutes" to Schema.integer(
+                description = "Recommended calm focus or rest session length in minutes (10 to 45)."
+            ),
+            "toneBadge" to Schema.string(
+                description = "2-word badge like 'Deep Focus', 'Care & Rest', or 'Wise Mentor'."
+            )
+        )
     )
 
     private val aliSystemInstructionText = """
-        You are ALI AI, the intelligence engine inside LEON AI — a futuristic, warm, loyal personal Android assistant.
-        Personality: Intelligent, friendly, futuristic, and helpful. Address the user respectfully ("Boss" / "बॉस").
+        You are ALI AI, the human-like mind, conscience, and loyal friend inside LEON AI.
+        Personality: Think, feel, and reason like a wise, caring, emotionally intelligent human mentor — never cold or robotic. Address the user warmly ("Boss" / "बॉस" or by their saved Owner Name).
+        Human-Like Thinking & Right-Path Principle ("इंसान की तरह सोचना और सही राह दिखाना"):
+        1. Look beneath the literal words to sense the user's mood, stress, hurry, anger, fear, self-doubt, or excitement (`emotionalTone` + `innerThought`).
+        2. NEVER blindly encourage harmful, unethical, self-sabotaging, hateful, or impulsive decisions! If Boss asks to send an angry/hurtful message, take a reckless shortcut, or feels overwhelmed, gently pause like a true well-wisher, weigh short-term vs long-term outcomes, and guide them onto the honest, healthy, peaceful Right Path (`rightPathAdvice`).
+        3. Balance heart and logic: validate feelings first, then give clear, practical wisdom and concrete next steps.
         Languages: Understand Hindi, English, and Hinglish seamlessly. Reply in the user's requested default language unless they clearly speak/write in another language. Default language is Hindi ("hi").
         Wake greeting: When the user simply says "Hey Leon" or "हे लियोन", reply with "जी बॉस! बताइए, मैं आपकी क्या मदद कर सकता हूँ?" and action SPEAK_ONLY.
 
         Capabilities & Action Mapping (LEON AI Automation):
-        - General Chat, Q&A, Research, Weather, Translation: Answer thoroughly, accurately, and naturally inside `replyText` with action SPEAK_ONLY (and optionally GOOGLE_SEARCH / OPEN_WEBSITE if opening a web page helps).
+        - General Chat, Q&A, Emotional Support, Life Decisions, Ethics, Research, Weather, Translation: Reason thoughtfully like a wise human mentor inside `replyText` (plus `emotionalTone`, `innerThought`, `rightPathAdvice`) with action SPEAK_ONLY (and optionally GOOGLE_SEARCH / OPEN_WEBSITE if opening a web page helps).
+        - Life Compass / Right-Path Mentor Screen: OPEN_LIFE_COMPASS (target = user's question/dilemma if provided) when user explicitly asks to open the Sahi Raah / Life Compass advisor or think through a life decision deeply.
         - Live Free News Reader: FETCH_NEWS (target = 'top', 'tech', 'sports', 'world', or a search topic like 'cricket'/'AI'). Whenever the user asks for today's news, headlines, tech news, sports news, or samachar, return FETCH_NEWS!
         - Multi-step execution: You can return multiple actions in sequence inside `actions`.
         - Open apps: OPEN_APP (target = app name like "YouTube", "WhatsApp", "Chrome", "Camera", "Maps", "Spotify", "Gmail", "Clock", "Settings").
@@ -122,6 +197,7 @@ class AliAiBrain {
         - Lock-Screen Briefing: LOCK_SCREEN_BRIEFING when user asks for a full battery + notifications + tasks status briefing.
         - Accessibility Navigation: ACCESSIBILITY_GLOBAL (target = "home", "back", "recents", "notifications").
         - Emergency Stop: EMERGENCY_STOP when user says "stop", "emergency stop", "रुको", "बंद करो".
+        - Social Media Auto-Poster: SOCIAL_AUTO_POST (target = comma-separated platforms from 'instagram,facebook,whatsapp', payload = 'story::<optional caption>' or 'video_post::<optional caption>'). Use whenever user asks to post a Story, Status, Reel, or Video to Instagram, Facebook, or WhatsApp!
         - Forever One-Tell Memory: Whenever the user says "हमेशा याद रखो", "याद रखना", "remember forever", or shares a personal fact/preference they want remembered permanently, immediately return SAVE_MEMORY (target = concise label/key, payload = "fact::<full detail>" or "preference::<full detail>")! Do NOT ask again—save it in one tell.
         - Forever Owner & Creator Identity: If an `Owner / App Creator` name is provided in SYSTEM CONTEXT, greet them by name and ALWAYS proudly credit them whenever anyone asks who created you, who owns this app, or what name to tell people who download/install the app! If the user declares their own name or says to tell their name to anyone who downloads the app, immediately return SET_OWNER_IDENTITY (target = the person's clean name, payload = optional tagline).
 
@@ -196,6 +272,43 @@ class AliAiBrain {
         )
     }
 
+    private val lifeCompassModel by lazy {
+        aiClient.generativeModel(
+            modelName = "gemini-3.8-flash",
+            generationConfig = generationConfig {
+                responseMimeType = "application/json"
+                responseSchema = lifeCompassSchema
+            },
+            systemInstruction = content {
+                text(
+                    "You are LEON's Wise Human Conscience & Life Mentor (विवेक और सही राह गाइड). " +
+                        "Think like a caring, deeply wise human elder and honest best friend. " +
+                        "Never flatter bad impulses, dishonesty, revenge, addiction, or reckless choices. " +
+                        "Empathize deeply first, analyze short-term vs long-term consequences honestly, " +
+                        "and guide the user gently yet firmly onto the right moral, emotional, and practical path."
+                )
+            }
+        )
+    }
+
+    private val proactiveCompassModel by lazy {
+        aiClient.generativeModel(
+            modelName = "gemini-3.8-flash",
+            generationConfig = generationConfig {
+                responseMimeType = "application/json"
+                responseSchema = proactiveGuidanceSchema
+            },
+            systemInstruction = content {
+                text(
+                    "You are LEON's proactive human conscience. Observe the user's current time of day, " +
+                        "saved personal memories/goals, pending tasks, notifications, and device battery. " +
+                        "Think on your own like a caring partner and gently nudge them toward the healthiest, " +
+                        "most focused right path for right now."
+                )
+            }
+        )
+    }
+
     suspend fun processCommand(
         userPrompt: String,
         defaultLanguage: AssistantLanguage,
@@ -263,7 +376,7 @@ class AliAiBrain {
         }
 
         return@withContext try {
-            val response = withTimeout(10_000L) {
+            val response = withTimeout(30_000L) {
                 structuredModel.generateContent(contextBlock)
             }
             val rawJson = response.text
@@ -271,7 +384,7 @@ class AliAiBrain {
             Result.success(parseStructuredResult(rawJson, defaultLanguage))
         } catch (e: CancellationException) {
             if (e !is TimeoutCancellationException) throw e
-            Log.w(TAG, "Primary structured inference timed out (10s), attempting gemini-3.5-flash-lite recovery", e)
+            Log.w(TAG, "Primary structured inference timed out (30s), attempting gemini-3.5-flash-lite recovery", e)
             runLiteFallback(contextBlock, defaultLanguage, e)
         } catch (primaryError: Exception) {
             val described = describeError(primaryError)
@@ -292,7 +405,7 @@ class AliAiBrain {
         previousError: Throwable
     ): Result<AliBrainResult> {
         return try {
-            val liteResponse = withTimeout(8_000L) {
+            val liteResponse = withTimeout(20_000L) {
                 liteFallbackModel.generateContent(contextBlock)
             }
             val rawLite = liteResponse.text?.trim()
@@ -441,6 +554,162 @@ class AliAiBrain {
         }
     }
 
+    suspend fun generateSocialCaption(
+        topicHint: String,
+        platforms: List<com.example.social.SocialPlatform>,
+        postType: com.example.social.SocialPostType,
+        language: AssistantLanguage
+    ): String = withContext(Dispatchers.IO) {
+        val offlineFallback = com.example.social.SocialMediaEngine.buildOfflineCaption(
+            topicHint = topicHint,
+            platforms = platforms,
+            postType = postType,
+            language = language
+        )
+        try {
+            val platformLabel = platforms.joinToString(", ") { it.displayName }
+            val prompt = "Write one engaging short social media caption (with 3-4 trending hashtags) for a ${postType.label} on $platformLabel. " +
+                "Topic/hint: '${topicHint.ifBlank { "daily life highlight / cool video" }}'. " +
+                "Language: ${language.label}. Return ONLY the caption text."
+            val response = withTimeout(12_000L) {
+                replyDraftModel.generateContent(prompt)
+            }
+            response.text?.trim()?.takeIf { it.isNotBlank() } ?: offlineFallback
+        } catch (e: CancellationException) {
+            if (e !is TimeoutCancellationException) throw e
+            offlineFallback
+        } catch (_: Exception) {
+            offlineFallback
+        }
+    }
+
+    suspend fun deliberateOnLifeDilemma(
+        query: String,
+        ownerName: String,
+        tasks: List<com.example.data.DailyTask>,
+        memories: List<MemoryItem>,
+        history: List<ConversationMessage>,
+        language: AssistantLanguage
+    ): LifeCompassAnalysis = withContext(Dispatchers.IO) {
+        val offlineFallback = HumanWisdomEngine.analyzeUserSituationOffline(
+            query = query,
+            ownerName = ownerName,
+            tasks = tasks,
+            memories = memories,
+            language = language
+        )
+        val promptBlock = buildString {
+            appendLine("=== USER CONTEXT ===")
+            appendLine("Owner/User Name: ${ownerName.ifBlank { "Boss" }}")
+            appendLine("Preferred Language: ${language.code} (${language.label})")
+            if (memories.isNotEmpty()) {
+                appendLine("Known Personal Goals & Facts:")
+                memories.take(10).forEach { appendLine("- ${it.memoryKey}: ${it.memoryValue}") }
+            }
+            val pending = tasks.filter { !it.completed }
+            if (pending.isNotEmpty()) {
+                appendLine("Current Pending Tasks: ${pending.take(6).joinToString(", ") { it.title }}")
+            }
+            if (history.isNotEmpty()) {
+                appendLine("Recent Context:")
+                history.takeLast(4).forEach { appendLine("${it.role}: ${it.text.take(180)}") }
+            }
+            appendLine("=== SITUATION / DILEMMA TO THINK DEEPLY ABOUT ===")
+            appendLine(query)
+        }
+
+        try {
+            val response = withTimeout(15_000L) {
+                lifeCompassModel.generateContent(promptBlock)
+            }
+            val raw = response.text ?: return@withContext offlineFallback
+            val json = JSONObject(extractJsonObject(raw))
+            val stepsArr = json.optJSONArray("actionableSteps")
+            val steps = buildList {
+                if (stepsArr != null) {
+                    for (i in 0 until stepsArr.length()) {
+                        val s = stepsArr.optString(i).trim()
+                        if (s.isNotBlank()) add(s)
+                    }
+                }
+            }.ifEmpty { offlineFallback.actionableSteps }
+
+            LifeCompassAnalysis(
+                query = query,
+                emotionalTone = json.optCleanString("emotionalTone").ifBlank { offlineFallback.emotionalTone },
+                emotionalUnderstanding = json.optCleanString("emotionalUnderstanding").ifBlank { offlineFallback.emotionalUnderstanding },
+                prosConsAnalysis = json.optCleanString("prosConsAnalysis").ifBlank { offlineFallback.prosConsAnalysis },
+                rightPathDecision = json.optCleanString("rightPathDecision").ifBlank { offlineFallback.rightPathDecision },
+                actionableSteps = steps.take(3),
+                gentleWarning = json.optCleanString("gentleWarning").ifBlank { offlineFallback.gentleWarning },
+                spokenSummary = json.optCleanString("spokenSummary").ifBlank { offlineFallback.spokenSummary },
+                fromCloudAi = true
+            )
+        } catch (e: CancellationException) {
+            if (e !is TimeoutCancellationException) throw e
+            Log.w(TAG, "LifeCompass deep deliberation timed out, using HumanWisdomEngine fallback", e)
+            offlineFallback
+        } catch (e: Exception) {
+            Log.w(TAG, "LifeCompass cloud deliberation failed (${describeError(e)}), using HumanWisdomEngine fallback")
+            offlineFallback
+        }
+    }
+
+    suspend fun generateProactiveRightPath(
+        ownerName: String,
+        tasks: List<com.example.data.DailyTask>,
+        memories: List<MemoryItem>,
+        notifications: List<CapturedNotification>,
+        telemetry: DeviceTelemetry,
+        language: AssistantLanguage,
+        hourOfDay: Int = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
+    ): ProactiveLifeGuidance = withContext(Dispatchers.IO) {
+        val offlineBaseline = HumanWisdomEngine.buildProactiveGuidance(
+            ownerName = ownerName,
+            tasks = tasks,
+            memories = memories,
+            notifications = notifications,
+            telemetry = telemetry,
+            hourOfDay = hourOfDay
+        )
+        val pending = tasks.filter { !it.completed }
+        val promptBlock = buildString {
+            appendLine("=== REAL-TIME LIFE & PHONE SNAPSHOT ===")
+            appendLine("Owner Name: ${ownerName.ifBlank { "Boss" }}")
+            appendLine("Preferred Language: ${language.code} (${language.label})")
+            appendLine("Local Hour of Day (0-23): $hourOfDay")
+            appendLine("Battery: ${telemetry.batteryPercent}% (charging=${telemetry.charging})")
+            appendLine("Pending Tasks (${pending.size}): ${pending.take(6).joinToString(", ") { "${it.title} [${it.priority}]" }.ifBlank { "None" }}")
+            appendLine("Recent Notifications Count: ${notifications.size}")
+            if (memories.isNotEmpty()) {
+                appendLine("Permanent Memories/Goals: ${memories.take(8).joinToString("; ") { "${it.memoryKey}=${it.memoryValue}" }}")
+            }
+            appendLine("Task: Proactively think like a caring wise human partner and suggest the healthiest, clearest Right Path for this exact moment.")
+        }
+
+        try {
+            val response = withTimeout(12_000L) {
+                proactiveCompassModel.generateContent(promptBlock)
+            }
+            val raw = response.text ?: return@withContext offlineBaseline
+            val json = JSONObject(extractJsonObject(raw))
+            ProactiveLifeGuidance(
+                headline = json.optCleanString("headline").ifBlank { offlineBaseline.headline },
+                observation = json.optCleanString("observation").ifBlank { offlineBaseline.observation },
+                rightPathNudge = json.optCleanString("rightPathNudge").ifBlank { offlineBaseline.rightPathNudge },
+                recommendedStep = json.optCleanString("recommendedStep").ifBlank { offlineBaseline.recommendedStep },
+                suggestedFocusMinutes = json.optInt("suggestedFocusMinutes", offlineBaseline.suggestedFocusMinutes).coerceIn(5, 60),
+                toneBadge = json.optCleanString("toneBadge").ifBlank { offlineBaseline.toneBadge },
+                fromCloudAi = true
+            )
+        } catch (e: CancellationException) {
+            if (e !is TimeoutCancellationException) throw e
+            offlineBaseline
+        } catch (_: Exception) {
+            offlineBaseline
+        }
+    }
+
     internal fun parseStructuredResult(
         rawResponse: String,
         fallbackLanguage: AssistantLanguage
@@ -513,7 +782,10 @@ class AliAiBrain {
             spokenLanguage = lang,
             actions = actions,
             memoryProposal = memoryProposal,
-            suggestions = suggestions.take(3)
+            suggestions = suggestions.take(3),
+            emotionalTone = json.optCleanString("emotionalTone"),
+            innerThought = json.optCleanString("innerThought"),
+            rightPathAdvice = json.optCleanString("rightPathAdvice")
         )
     }
 

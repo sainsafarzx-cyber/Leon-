@@ -28,6 +28,7 @@ import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.PlayCircle
 import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.SkipNext
 import androidx.compose.material.icons.rounded.Timer
 import androidx.compose.material.icons.rounded.Wifi
@@ -79,6 +80,7 @@ import com.example.ui.theme.NeuralViolet
 @Composable
 fun AutomationScreen(
     viewModel: LeonViewModel,
+    onOpenSocialPoster: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val telemetry by viewModel.telemetry.collectAsStateWithLifecycle()
@@ -231,6 +233,13 @@ fun AutomationScreen(
                             active = false,
                             onClick = { viewModel.openDeviceShortcut(ActionType.SET_ALARM, target = "LEON Alarm", payload = "07:00") },
                             modifier = Modifier.weight(1f)
+                        )
+                        QuickControlButton(
+                            icon = Icons.Rounded.Share,
+                            label = "Social Post",
+                            active = false,
+                            onClick = onOpenSocialPoster,
+                            modifier = Modifier.weight(1f).testTag("control_social_poster_button")
                         )
                     }
 

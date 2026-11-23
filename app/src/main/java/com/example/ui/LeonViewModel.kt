@@ -12,6 +12,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.ai.AliAiBrain
+import com.example.ai.HumanWisdomEngine
 import com.example.ai.LocalCommandRouter
 import com.example.audio.LeonSpeaker
 import com.example.automation.LeonActionExecutor
@@ -26,7 +27,9 @@ import com.example.data.DailyTask
 import com.example.data.DeviceAction
 import com.example.data.DeviceTelemetry
 import com.example.data.FirebaseCloudSync
+import com.example.data.HumanReflectionBanner
 import com.example.data.LeonRepository
+import com.example.data.LifeCompassUiState
 import com.example.data.MemoryCategory
 import com.example.data.MemoryItem
 import com.example.data.MemoryProposal
@@ -45,6 +48,12 @@ import com.example.service.NotificationBridge
 import com.example.service.VoiceOrbState
 import com.example.service.VoiceServiceBridge
 import com.example.service.VoiceServiceEvent
+import com.example.social.SocialAutoPosterBridge
+import com.example.social.SocialMediaEngine
+import com.example.social.SocialPlatform
+import com.example.social.SocialPostJob
+import com.example.social.SocialPostType
+import com.example.social.SocialStudioState
 import com.example.vision.OfflineCameraVisionAnalyzer
 import com.example.vision.OfflineVisionAnalysis
 import android.speech.tts.TextToSpeech
@@ -187,6 +196,23 @@ class LeonViewModel(
     private val _newsState = MutableStateFlow(NewsUiState())
     val newsState: StateFlow<NewsUiState> = _newsState.asStateFlow()
 
+    private val _socialState = MutableStateFlow(SocialStudioState())
+    val socialState: StateFlow<SocialStudioState> = _socialState.asStateFlow()
+
+    private val _openSocialPosterTrigger = MutableStateFlow(0)
+    val openSocialPosterTrigger: StateFlow<Int> = _openSocialPosterTrigger.asStateFlow()
+
+    private val _latestHumanReflection = MutableStateFlow<HumanReflectionBanner?>(null)
+    val latestHumanReflection: StateFlow<HumanReflectionBanner?> = _latestHumanReflection.asStateFlow()
+
+    private val _lifeCompassState = MutableStateFlow(LifeCompassUiState())
+    val lifeCompassState: StateFlow<LifeCompassUiState> = _lifeCompassState.asStateFlow()
+
+    private val _openLifeCompassTrigger = MutableStateFlow(0)
+    val openLifeCompassTrigger: StateFlow<Int> = _openLifeCompassTrigger.asStateFlow()
+
+    private val socialMediaEngine by lazy { SocialMediaEngine(appContext) }
+
     private val sixthSenseEngine = SixthSenseEngine(
         context = appContext,
         onAirGestureTriggered = { action -> handleAirGesture(action) },
@@ -201,6 +227,7 @@ class LeonViewModel(
 
     private var activeAiJob: Job? = null
     private var newsFetchJob: Job? = null
+    private var compassJob: Job? = null
 
     init {
         LeonSpeaker.init(appContext)
@@ -213,6 +240,9 @@ class LeonViewModel(
             repository.ensureDefaultPreferences()
             val prefs = repository.getPreferencesOnce()
             _telemetry.value = executor.readTelemetry()
+            _socialState.value = _socialState.value.copy(
+                installedPlatforms = socialMediaEngine.checkInstalledPlatforms()
+            )
             val micGranted = ContextCompat.checkSelfPermission(
                 appContext,
                 Manifest.permission.RECORD_AUDIO
@@ -225,6 +255,24 @@ class LeonViewModel(
                         prefs.voiceSpeed.toFloat().coerceIn(0.5f, 2.0f),
                         prefs.lockScreenModeEnabled
                     )
+                }
+            }
+        }
+        viewModelScope.launch {
+            SocialAutoPosterBridge.activeJob.collect { job ->
+                _socialState.value = _socialState.value.copy(activeJob = job)
+            }
+        }
+        viewModelScope.launch {
+            SocialAutoPosterBridge.logs.collect { logs ->
+                _socialState.value = _socialState.value.copy(activityLogs = logs)
+            }
+        }
+        viewModelScope.launch {
+            SocialAutoPosterBridge.openStudioRequests.collect { req ->
+                if (req != null) {
+                    applySocialRouteSpec(req.first, req.second)
+                    _openSocialPosterTrigger.value += 1
                 }
             }
         }
@@ -261,6 +309,9 @@ class LeonViewModel(
     fun refreshTelemetry() {
         viewModelScope.launch(Dispatchers.IO) {
             _telemetry.value = executor.readTelemetry()
+            _socialState.value = _socialState.value.copy(
+                installedPlatforms = socialMediaEngine.checkInstalledPlatforms()
+            )
         }
     }
 
@@ -362,10 +413,14 @@ class LeonViewModel(
         activeAiJob = null
         newsFetchJob?.cancel()
         newsFetchJob = null
+        compassJob?.cancel()
+        compassJob = null
         _isThinking.value = false
         _pendingConfirmation.value = null
+        _lifeCompassState.value = _lifeCompassState.value.copy(isThinking = false, isAutoThinking = false)
         LeonSpeaker.stop()
         LeonVoiceService.emergencyStop(appContext)
+        SocialAutoPosterBridge.clearJob()
         viewModelScope.launch {
             repository.updatePreferences(alwaysReadyEnabled = false)
         }
@@ -565,6 +620,14 @@ class LeonViewModel(
         if (brainResult.suggestions.isNotEmpty()) {
             _suggestions.value = brainResult.suggestions
         }
+        if (brainResult.innerThought.isNotBlank() || brainResult.rightPathAdvice.isNotBlank()) {
+            _latestHumanReflection.value = HumanReflectionBanner(
+                emotionalTone = brainResult.emotionalTone.ifBlank { "Human Wisdom" },
+                innerThought = brainResult.innerThought,
+                rightPathAdvice = brainResult.rightPathAdvice,
+                sourceQuery = brainResult.replyText.take(80)
+            )
+        }
         if (memoryConsentGranted && brainResult.memoryProposal != null) {
             _pendingMemoryProposal.value = brainResult.memoryProposal
         }
@@ -692,7 +755,8 @@ class LeonViewModel(
         val lockDecision = LockScreenPolicy.evaluate(
             action = action,
             isDeviceLocked = isLocked,
-            canWriteSettings = _telemetry.value.writeSettingsGranted
+            canWriteSettings = _telemetry.value.writeSettingsGranted,
+            allowLockScreenCalls = currentPreferences().lockScreenModeEnabled
         )
         if (!lockDecision.allowed) {
             LeonVoiceService.speak(
@@ -840,9 +904,38 @@ class LeonViewModel(
                     }
                 )
             }
+            ActionType.MAKE_CALL -> {
+                val outcome = withContext(Dispatchers.IO) {
+                    val savedMemories = (memoriesState.value as? UiState.Success)?.data.orEmpty()
+                    executor.makeCall(
+                        target = action.target,
+                        memories = savedMemories,
+                        allowBackgroundDirectOnly = isLocked
+                    )
+                }
+                if (!outcome.success && _voiceRepliesEnabled.value) {
+                    speakOutLoud(outcome.logMessage, AssistantLanguage.HINDI, currentVoiceSpeed(), TextToSpeech.QUEUE_FLUSH)
+                }
+                outcome.logMessage
+            }
             ActionType.OPEN_OFFLINE_VISION -> {
                 _openOfflineVisionTrigger.value += 1
                 "Opened LEON Offline Eye Camera"
+            }
+            ActionType.SOCIAL_AUTO_POST -> {
+                applySocialRouteSpec(action.target, action.payload)
+                _openSocialPosterTrigger.value += 1
+                "Opened LEON Social Auto-Poster"
+            }
+            ActionType.OPEN_LIFE_COMPASS -> {
+                if (action.target.isNotBlank()) {
+                    _lifeCompassState.value = _lifeCompassState.value.copy(queryInput = action.target)
+                    deliberateOnLifeCompass(action.target, speakAloud = _voiceRepliesEnabled.value)
+                } else {
+                    refreshProactiveRightPath(speakAloud = false)
+                }
+                _openLifeCompassTrigger.value += 1
+                "Opened Sahi Raah • Life Compass"
             }
             else -> withContext(Dispatchers.IO) { executor.execute(action).logMessage }
         }
@@ -1335,6 +1428,342 @@ class LeonViewModel(
                     _statusBanner.value = "याद सेव करने में समस्या आई।"
                 }
         }
+    }
+
+    fun openSocialPoster(target: String = "", payload: String = "") {
+        applySocialRouteSpec(target, payload)
+        refreshSocialPlatforms()
+        _openSocialPosterTrigger.value += 1
+    }
+
+    private fun applySocialRouteSpec(target: String, payload: String) {
+        if (target.isBlank() && payload.isBlank()) return
+        val (platforms, postType, captionHint) = SocialMediaEngine.parseSocialSpec(target, payload)
+        val current = _socialState.value
+        _socialState.value = current.copy(
+            selectedPlatforms = platforms.toSet(),
+            postType = postType,
+            caption = if (captionHint.isNotBlank()) captionHint else current.caption,
+            installedPlatforms = socialMediaEngine.checkInstalledPlatforms()
+        )
+    }
+
+    fun refreshSocialPlatforms() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val installed = socialMediaEngine.checkInstalledPlatforms()
+            _socialState.value = _socialState.value.copy(installedPlatforms = installed)
+        }
+    }
+
+    fun toggleSocialPlatform(platform: SocialPlatform) {
+        val current = _socialState.value.selectedPlatforms.toMutableSet()
+        if (platform in current) {
+            if (current.size > 1) {
+                current.remove(platform)
+            } else {
+                _statusBanner.value = "कम से कम 1 सोशल ऐप चुनना ज़रूरी है।"
+                return
+            }
+        } else {
+            current.add(platform)
+        }
+        _socialState.value = _socialState.value.copy(selectedPlatforms = current)
+    }
+
+    fun setSocialPostType(type: SocialPostType) {
+        _socialState.value = _socialState.value.copy(postType = type)
+    }
+
+    fun updateSocialCaption(caption: String) {
+        _socialState.value = _socialState.value.copy(caption = caption)
+    }
+
+    fun setSocialAutoTapEnabled(enabled: Boolean) {
+        _socialState.value = _socialState.value.copy(autoTapEnabled = enabled)
+    }
+
+    fun onSocialMediaPicked(uri: Uri) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val res = socialMediaEngine.stageMediaFromUri(uri)
+            res.onSuccess { staged ->
+                _socialState.value = _socialState.value.copy(stagedMedia = staged)
+                SocialAutoPosterBridge.appendLog(
+                    "Media staged: ${staged.displayName} (${if (staged.isVideo) "Video" else "Photo"})"
+                )
+                _statusBanner.value = "मीडिया तैयार है: ${staged.displayName}"
+            }.onFailure { err ->
+                _statusBanner.value = err.localizedMessage ?: "Selected media could not be staged."
+            }
+        }
+    }
+
+    fun generateAiSocialCaption() {
+        if (_socialState.value.isGeneratingCaption) return
+        val snapshot = _socialState.value
+        _socialState.value = snapshot.copy(isGeneratingCaption = true)
+        viewModelScope.launch {
+            try {
+                val platforms = snapshot.selectedPlatforms.toList().ifEmpty { SocialPlatform.entries }
+                val caption = aliBrain.generateSocialCaption(
+                    topicHint = snapshot.caption.ifBlank { snapshot.stagedMedia?.displayName.orEmpty() },
+                    platforms = platforms,
+                    postType = snapshot.postType,
+                    language = currentLanguage()
+                )
+                _socialState.value = _socialState.value.copy(
+                    caption = caption,
+                    isGeneratingCaption = false
+                )
+                socialMediaEngine.copyCaptionToClipboard(caption)
+                SocialAutoPosterBridge.appendLog("Generated & copied caption (${caption.length} chars)")
+            } finally {
+                _socialState.value = _socialState.value.copy(isGeneratingCaption = false)
+            }
+        }
+    }
+
+    fun startSocialAutoPostQueue() {
+        val state = _socialState.value
+        val media = state.stagedMedia
+        if (media == null) {
+            val msg = "बॉस, पहले नीचे से कोई वीडियो या फोटो चुनिए!"
+            _statusBanner.value = msg
+            if (_voiceRepliesEnabled.value) {
+                speakOutLoud(msg, AssistantLanguage.HINDI, currentVoiceSpeed(), forceForeground = true)
+            }
+            return
+        }
+        val orderedPlatforms = SocialPlatform.entries.filter { it in state.selectedPlatforms }
+            .ifEmpty { SocialPlatform.entries }
+        val installedMap = socialMediaEngine.checkInstalledPlatforms()
+        _socialState.value = state.copy(installedPlatforms = installedMap)
+        val installedQueue = orderedPlatforms.filter { installedMap[it] == true }
+        if (installedQueue.isEmpty()) {
+            val msg = "बॉस, चुने हुए ऐप (Instagram/Facebook/WhatsApp) इस डिवाइस पर इंस्टॉल नहीं मिले।"
+            _statusBanner.value = msg
+            SocialAutoPosterBridge.appendLog(msg)
+            return
+        }
+
+        val effectiveAutoTap = state.autoTapEnabled && _telemetry.value.accessibilityEnabled
+        val job = SocialPostJob(
+            id = UUID.randomUUID().toString(),
+            platforms = installedQueue,
+            currentIndex = 0,
+            postType = state.postType,
+            caption = state.caption.trim(),
+            autoTapEnabled = effectiveAutoTap,
+            media = media
+        )
+        SocialAutoPosterBridge.armJob(job)
+        val firstPlatform = installedQueue.first()
+        val outcome = socialMediaEngine.launchPlatformStep(
+            platform = firstPlatform,
+            postType = job.postType,
+            media = media,
+            caption = job.caption
+        )
+        SocialAutoPosterBridge.appendLog("${firstPlatform.displayName}: ${outcome.logMessage}")
+        _statusBanner.value = outcome.logMessage
+        if (!outcome.success) {
+            SocialAutoPosterBridge.advanceStepManually()
+        }
+    }
+
+    fun launchNextSocialPlatform() {
+        val nextJob = SocialAutoPosterBridge.advanceStepManually() ?: run {
+            _statusBanner.value = "सभी चुने हुए प्लेटफ़ॉर्म पूरे हो चुके हैं।"
+            return
+        }
+        val platform = nextJob.currentPlatform ?: return
+        val outcome = socialMediaEngine.launchPlatformStep(
+            platform = platform,
+            postType = nextJob.postType,
+            media = nextJob.media,
+            caption = nextJob.caption
+        )
+        SocialAutoPosterBridge.appendLog("${platform.displayName}: ${outcome.logMessage}")
+        _statusBanner.value = outcome.logMessage
+    }
+
+    fun clearSocialQueue() {
+        SocialAutoPosterBridge.clearJob()
+        _statusBanner.value = "Social Auto-Poster queue cleared."
+    }
+
+    fun dismissHumanReflection() {
+        _latestHumanReflection.value = null
+    }
+
+    fun openLifeCompassWithSeed(seed: String = "") {
+        val cleanSeed = seed.trim()
+        if (cleanSeed.isNotEmpty()) {
+            _lifeCompassState.value = _lifeCompassState.value.copy(queryInput = cleanSeed)
+        }
+        refreshProactiveRightPath(speakAloud = false)
+        _openLifeCompassTrigger.value += 1
+    }
+
+    fun updateLifeCompassQuery(query: String) {
+        _lifeCompassState.value = _lifeCompassState.value.copy(queryInput = query, errorMessage = null)
+    }
+
+    fun refreshProactiveRightPath(speakAloud: Boolean = false) {
+        val prefs = currentPreferences()
+        val tasks = currentTasks()
+        val memories = currentMemories()
+        val notifs = NotificationBridge.notifications.value
+        val tel = _telemetry.value
+
+        if (_lifeCompassState.value.proactiveGuidance == null) {
+            val instantBaseline = HumanWisdomEngine.buildProactiveGuidance(
+                ownerName = prefs.ownerName,
+                tasks = tasks,
+                memories = memories,
+                notifications = notifs,
+                telemetry = tel
+            )
+            _lifeCompassState.value = _lifeCompassState.value.copy(proactiveGuidance = instantBaseline)
+        }
+
+        compassJob?.cancel()
+        _lifeCompassState.value = _lifeCompassState.value.copy(isAutoThinking = true, errorMessage = null)
+        compassJob = viewModelScope.launch {
+            try {
+                val guidance = aliBrain.generateProactiveRightPath(
+                    ownerName = prefs.ownerName,
+                    tasks = tasks,
+                    memories = memories,
+                    notifications = notifs,
+                    telemetry = tel,
+                    language = AssistantLanguage.fromCode(prefs.defaultLanguage)
+                )
+                _lifeCompassState.value = _lifeCompassState.value.copy(
+                    isAutoThinking = false,
+                    proactiveGuidance = guidance
+                )
+                if (speakAloud && _voiceRepliesEnabled.value) {
+                    speakOutLoud(
+                        "${guidance.headline}. ${guidance.rightPathNudge}",
+                        AssistantLanguage.fromCode(prefs.defaultLanguage),
+                        currentVoiceSpeed(),
+                        forceForeground = true
+                    )
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _lifeCompassState.value = _lifeCompassState.value.copy(
+                    isAutoThinking = false,
+                    errorMessage = e.localizedMessage
+                )
+            }
+        }
+    }
+
+    fun deliberateOnLifeCompass(queryOverride: String? = null, speakAloud: Boolean = true) {
+        val query = (queryOverride ?: _lifeCompassState.value.queryInput).trim()
+        if (query.isEmpty()) {
+            _statusBanner.value = "बॉस, पहले अपनी उलझन या सवाल लिखें — LEON सोचकर सही राह बताएगा।"
+            return
+        }
+        val prefs = currentPreferences()
+        val lang = AssistantLanguage.fromCode(prefs.defaultLanguage)
+        compassJob?.cancel()
+        _lifeCompassState.value = _lifeCompassState.value.copy(
+            queryInput = query,
+            isThinking = true,
+            errorMessage = null
+        )
+        compassJob = viewModelScope.launch {
+            try {
+                val latestTel = refreshTelemetryNow()
+                val analysis = if (latestTel.internetConnected) {
+                    aliBrain.deliberateOnLifeDilemma(
+                        query = query,
+                        ownerName = prefs.ownerName,
+                        tasks = currentTasks(),
+                        memories = currentMemories(),
+                        history = currentHistory(),
+                        language = lang
+                    )
+                } else {
+                    HumanWisdomEngine.analyzeUserSituationOffline(
+                        query = query,
+                        ownerName = prefs.ownerName,
+                        tasks = currentTasks(),
+                        memories = currentMemories(),
+                        language = lang
+                    )
+                }
+                _lifeCompassState.value = _lifeCompassState.value.copy(
+                    isThinking = false,
+                    currentAnalysis = analysis
+                )
+                _latestHumanReflection.value = HumanReflectionBanner(
+                    emotionalTone = analysis.emotionalTone,
+                    innerThought = analysis.emotionalUnderstanding,
+                    rightPathAdvice = analysis.rightPathDecision,
+                    sourceQuery = query
+                )
+                if (speakAloud && _voiceRepliesEnabled.value) {
+                    speakOutLoud(
+                        analysis.spokenSummary,
+                        lang,
+                        currentVoiceSpeed(),
+                        forceForeground = true
+                    )
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                val fallback = HumanWisdomEngine.analyzeUserSituationOffline(
+                    query = query,
+                    ownerName = prefs.ownerName,
+                    tasks = currentTasks(),
+                    memories = currentMemories(),
+                    language = lang
+                )
+                _lifeCompassState.value = _lifeCompassState.value.copy(
+                    isThinking = false,
+                    currentAnalysis = fallback,
+                    errorMessage = null
+                )
+            }
+        }
+    }
+
+    fun speakLifeCompassSummary(text: String) {
+        if (text.isBlank()) return
+        _voiceRepliesEnabled.value = true
+        speakOutLoud(text, currentLanguage(), currentVoiceSpeed(), forceForeground = true)
+    }
+
+    fun addCompassStepAsTask(stepTitle: String) {
+        val clean = stepTitle.trim()
+        if (clean.isEmpty()) return
+        viewModelScope.launch {
+            repository.createTask(
+                title = clean,
+                notes = "Added from LEON Sahi Raah • Life Compass",
+                dueLabel = "Today",
+                priority = TaskPriority.HIGH
+            ).onSuccess {
+                _statusBanner.value = "सही राह का कदम Daily Tasks में जुड़ गया: $clean"
+            }.onFailure {
+                _statusBanner.value = it.localizedMessage ?: "टास्क सेव नहीं हो सका।"
+            }
+        }
+    }
+
+    fun startCompassFocusTimer(minutes: Int) {
+        val safeMins = minutes.coerceIn(1, 180)
+        LeonVoiceService.startBackgroundTimer(
+            appContext,
+            safeMins * 60,
+            "Sahi Raah Focus (${safeMins}m)"
+        )
+        _statusBanner.value = "$safeMins मिनट का फोकस टाइमर शुरू हो गया — पूरे ध्यान से आगे बढ़ें!"
     }
 
     override fun onCleared() {

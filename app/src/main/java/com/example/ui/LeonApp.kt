@@ -69,6 +69,8 @@ const val ROUTE_MEMORY = "memory_vault"
 const val ROUTE_SECURITY = "security_vault"
 const val ROUTE_NEWS = "live_news"
 const val ROUTE_OFFLINE_VISION = "offline_vision"
+const val ROUTE_SOCIAL_POSTER = "social_poster"
+const val ROUTE_LIFE_COMPASS = "life_compass"
 
 private data class LeonNavDestination(
     val route: String,
@@ -113,6 +115,8 @@ fun LeonAppNavigation() {
     val currentRoute = backStackEntry?.destination?.route ?: ROUTE_HUD
     val statusBanner by viewModel.statusBanner.collectAsStateWithLifecycle()
     val openOfflineVisionTrigger by viewModel.openOfflineVisionTrigger.collectAsStateWithLifecycle()
+    val openSocialPosterTrigger by viewModel.openSocialPosterTrigger.collectAsStateWithLifecycle()
+    val openLifeCompassTrigger by viewModel.openLifeCompassTrigger.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
     val lifecycleOwner = LocalLifecycleOwner.current
 
@@ -142,6 +146,22 @@ fun LeonAppNavigation() {
     LaunchedEffect(openOfflineVisionTrigger) {
         if (openOfflineVisionTrigger > 0) {
             navController.navigate(ROUTE_OFFLINE_VISION) {
+                launchSingleTop = true
+            }
+        }
+    }
+
+    LaunchedEffect(openSocialPosterTrigger) {
+        if (openSocialPosterTrigger > 0) {
+            navController.navigate(ROUTE_SOCIAL_POSTER) {
+                launchSingleTop = true
+            }
+        }
+    }
+
+    LaunchedEffect(openLifeCompassTrigger) {
+        if (openLifeCompassTrigger > 0) {
+            navController.navigate(ROUTE_LIFE_COMPASS) {
                 launchSingleTop = true
             }
         }
@@ -248,11 +268,28 @@ fun LeonAppNavigation() {
                                     navController.navigate(ROUTE_OFFLINE_VISION) {
                                         launchSingleTop = true
                                     }
+                                },
+                                onOpenSocialPoster = {
+                                    navController.navigate(ROUTE_SOCIAL_POSTER) {
+                                        launchSingleTop = true
+                                    }
+                                },
+                                onOpenLifeCompass = {
+                                    navController.navigate(ROUTE_LIFE_COMPASS) {
+                                        launchSingleTop = true
+                                    }
                                 }
                             )
                         }
                         composable(ROUTE_CONTROL) {
-                            AutomationScreen(viewModel = viewModel)
+                            AutomationScreen(
+                                viewModel = viewModel,
+                                onOpenSocialPoster = {
+                                    navController.navigate(ROUTE_SOCIAL_POSTER) {
+                                        launchSingleTop = true
+                                    }
+                                }
+                            )
                         }
                         composable(ROUTE_RADAR) {
                             SixthSenseScreen(viewModel = viewModel)
@@ -271,6 +308,18 @@ fun LeonAppNavigation() {
                         }
                         composable(ROUTE_OFFLINE_VISION) {
                             OfflineVisionScreen(
+                                viewModel = viewModel,
+                                onBack = { navController.popBackStack() }
+                            )
+                        }
+                        composable(ROUTE_SOCIAL_POSTER) {
+                            SocialPosterScreen(
+                                viewModel = viewModel,
+                                onBack = { navController.popBackStack() }
+                            )
+                        }
+                        composable(ROUTE_LIFE_COMPASS) {
+                            LifeCompassScreen(
                                 viewModel = viewModel,
                                 onBack = { navController.popBackStack() }
                             )
