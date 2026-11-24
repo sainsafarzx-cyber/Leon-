@@ -5,6 +5,9 @@ import android.util.Log
 import com.example.data.ActionType
 import com.example.data.AliBrainResult
 import com.example.data.AssistantLanguage
+import com.example.data.CallReceptionistConfig
+import com.example.data.CallReceptionistResponse
+import com.example.data.CallTranscriptTurn
 import com.example.data.CapturedNotification
 import com.example.data.ConversationMessage
 import com.example.data.DeviceAction
@@ -162,6 +165,36 @@ class AliAiBrain {
         )
     )
 
+    private val callReceptionistSchema = Schema.obj(
+        properties = mapOf(
+            "replyToCaller" to Schema.string(
+                description = "Warm, polite, concise 1-2 sentence spoken response to the phone caller in Hindi, Hinglish, or English."
+            ),
+            "capturedCallerName" to Schema.string(
+                description = "Caller's name if stated, or empty string if still unknown.",
+                nullable = true
+            ),
+            "capturedPurpose" to Schema.string(
+                description = "Concise summary of why they called.",
+                nullable = true
+            ),
+            "urgency" to Schema.enumeration(
+                values = listOf("LOW", "MEDIUM", "HIGH"),
+                description = "Call priority based on caller situation."
+            ),
+            "shouldEscalateToBoss" to Schema.boolean(
+                description = "True ONLY for genuine emergencies or time-critical requests needing Boss immediately."
+            ),
+            "shouldEndCall" to Schema.boolean(
+                description = "True once caller's name + message are captured politely or caller says goodbye."
+            ),
+            "summaryForBoss" to Schema.string(
+                description = "Crisp 1-sentence Hindi/English report for Boss after the call."
+            )
+        ),
+        optionalProperties = listOf("capturedCallerName", "capturedPurpose")
+    )
+
     private val aliSystemInstructionText = """
         You are ALI AI, the human-like mind, conscience, and loyal friend inside LEON AI.
         Personality: Think, feel, and reason like a wise, caring, emotionally intelligent human mentor — never cold or robotic. Address the user warmly ("Boss" / "बॉस" or by their saved Owner Name).
@@ -198,6 +231,7 @@ class AliAiBrain {
         - Accessibility Navigation: ACCESSIBILITY_GLOBAL (target = "home", "back", "recents", "notifications").
         - Emergency Stop: EMERGENCY_STOP when user says "stop", "emergency stop", "रुको", "बंद करो".
         - Social Media Auto-Poster: SOCIAL_AUTO_POST (target = comma-separated platforms from 'instagram,facebook,whatsapp', payload = 'story::<optional caption>' or 'video_post::<optional caption>'). Use whenever user asks to post a Story, Status, Reel, or Video to Instagram, Facebook, or WhatsApp!
+        - AI Incoming Call Receptionist: OPEN_CALL_ASSISTANT whenever user asks LEON to answer/handle incoming calls when they cannot pick up ("कॉल आए और मैं रिसीव न कर पाऊँ तो AI बात करे", "open call receptionist", "call assistant").
         - Forever One-Tell Memory: Whenever the user says "हमेशा याद रखो", "याद रखना", "remember forever", or shares a personal fact/preference they want remembered permanently, immediately return SAVE_MEMORY (target = concise label/key, payload = "fact::<full detail>" or "preference::<full detail>")! Do NOT ask again—save it in one tell.
         - Forever Owner & Creator Identity: If an `Owner / App Creator` name is provided in SYSTEM CONTEXT, greet them by name and ALWAYS proudly credit them whenever anyone asks who created you, who owns this app, or what name to tell people who download/install the app! If the user declares their own name or says to tell their name to anyone who downloads the app, immediately return SET_OWNER_IDENTITY (target = the person's clean name, payload = optional tagline).
 
@@ -304,6 +338,23 @@ class AliAiBrain {
                         "saved personal memories/goals, pending tasks, notifications, and device battery. " +
                         "Think on your own like a caring partner and gently nudge them toward the healthiest, " +
                         "most focused right path for right now."
+                )
+            }
+        )
+    }
+
+    private val callReceptionistModel by lazy {
+        aiClient.generativeModel(
+            modelName = "gemini-3.8-flash",
+            generationConfig = generationConfig {
+                responseMimeType = "application/json"
+                responseSchema = callReceptionistSchema
+            },
+            systemInstruction = content {
+                text(
+                    "You are LEON AI, a polite, intelligent, human-sounding personal phone receptionist answering an unanswered incoming call on behalf of your Boss. " +
+                        "Always stay courteous, natural, and concise (max 2 short spoken sentences per turn). " +
+                        "Politely ask for caller's name and reason for calling if missing, note urgency accurately, NEVER disclose private Boss data or share OTPs/passwords, and wrap up politely once captured."
                 )
             }
         )
@@ -707,6 +758,84 @@ class AliAiBrain {
             offlineBaseline
         } catch (_: Exception) {
             offlineBaseline
+        }
+    }
+
+    suspend fun generateCallReceptionistTurn(
+        callerDisplay: String,
+        callerUtterance: String,
+        priorTurns: List<CallTranscriptTurn>,
+        ownerName: String,
+        config: CallReceptionistConfig,
+        language: AssistantLanguage,
+        existingCallerName: String = "",
+        existingPurpose: String = ""
+    ): CallReceptionistResponse = withContext(Dispatchers.IO) {
+        val offlineFallback = CallReceptionistEngine.generateOfflineTurn(
+            callerDisplay = callerDisplay,
+            callerUtterance = callerUtterance,
+            priorTurns = priorTurns,
+            ownerName = ownerName,
+            config = config,
+            language = language,
+            existingCallerName = existingCallerName,
+            existingPurpose = existingPurpose
+        )
+        // Security-sensitive / promotional spam turns are handled deterministically without waiting on network
+        val lower = callerUtterance.lowercase()
+        if (lower.contains("otp") || lower.contains("ओटीपी") || lower.contains("bank pin") || lower.contains("cvv")) {
+            return@withContext offlineFallback
+        }
+
+        val bossStatus = if (config.availabilityMode == com.example.data.BossAvailabilityMode.CUSTOM &&
+            config.customBossNote.isNotBlank()
+        ) {
+            config.customBossNote
+        } else {
+            "${config.availabilityMode.title} (${config.availabilityMode.hindiPhrase})"
+        }
+        val transcriptText = priorTurns.takeLast(6).joinToString("\n") { "${it.speaker}: ${it.text}" }
+        val promptBlock = buildString {
+            appendLine("Boss / Owner Name: ${ownerName.ifBlank { "Boss" }}")
+            appendLine("Boss Current Status: $bossStatus")
+            appendLine("Preferred Language: ${language.code} (${language.label}) — adapt naturally to caller's Hindi/Hinglish/English")
+            appendLine("Caller Label/Number: $callerDisplay")
+            if (existingCallerName.isNotBlank()) appendLine("Known Caller Name So Far: $existingCallerName")
+            if (existingPurpose.isNotBlank()) appendLine("Known Purpose So Far: $existingPurpose")
+            if (transcriptText.isNotBlank()) {
+                appendLine("=== CONVERSATION SO FAR ===")
+                appendLine(transcriptText)
+            }
+            appendLine("=== LATEST CALLER SPEECH ===")
+            appendLine(callerUtterance)
+        }
+
+        try {
+            val response = withTimeout(12_000L) {
+                callReceptionistModel.generateContent(promptBlock)
+            }
+            val raw = response.text ?: return@withContext offlineFallback
+            val json = JSONObject(extractJsonObject(raw))
+            val reply = json.optCleanString("replyToCaller").ifBlank { offlineFallback.replyToCaller }
+            val capturedName = json.optCleanString("capturedCallerName").ifBlank { offlineFallback.capturedCallerName }
+            val capturedPurpose = json.optCleanString("capturedPurpose").ifBlank { offlineFallback.capturedPurpose }
+            val urgency = json.optCleanString("urgency").uppercase().takeIf {
+                it in setOf("LOW", "MEDIUM", "HIGH")
+            } ?: offlineFallback.urgency
+            CallReceptionistResponse(
+                replyToCaller = reply,
+                capturedCallerName = capturedName,
+                capturedPurpose = capturedPurpose,
+                urgency = urgency,
+                shouldEscalateToBoss = json.optBoolean("shouldEscalateToBoss", offlineFallback.shouldEscalateToBoss),
+                shouldEndCall = json.optBoolean("shouldEndCall", offlineFallback.shouldEndCall),
+                summaryForBoss = json.optCleanString("summaryForBoss").ifBlank { offlineFallback.summaryForBoss }
+            )
+        } catch (e: CancellationException) {
+            if (e !is TimeoutCancellationException) throw e
+            offlineFallback
+        } catch (_: Exception) {
+            offlineFallback
         }
     }
 

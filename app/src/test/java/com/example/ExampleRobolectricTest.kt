@@ -12,10 +12,14 @@ import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.test.performTextInput
 import androidx.test.core.app.ApplicationProvider
 import com.example.ai.AliAiBrain
+import com.example.ai.CallReceptionistEngine
 import com.example.ai.HumanWisdomEngine
 import com.example.ai.LocalCommandRouter
 import com.example.data.ActionType
 import com.example.data.AssistantLanguage
+import com.example.data.BossAvailabilityMode
+import com.example.data.CallReceptionistConfig
+import com.example.data.CallTranscriptTurn
 import com.example.data.CapturedNotification
 import com.example.data.DailyTask
 import com.example.data.DeviceAction
@@ -27,6 +31,7 @@ import com.example.data.MemoryCategory
 import com.example.data.MemoryItem
 import com.example.media.LeonMusicEngine
 import com.example.sensors.SixthSenseEngine
+import com.example.service.CallReceptionistBridge
 import com.example.service.LockScreenPolicy
 import com.example.social.SocialAutoPosterBridge
 import com.example.social.SocialMediaEngine
@@ -1196,6 +1201,119 @@ class ExampleRobolectricTest {
         composeRule.onNodeWithTag("compass_list").performScrollToIndex(0)
         composeRule.waitForIdle()
         composeRule.onNodeWithTag("compass_back_button").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("voice_orb_button").assertIsDisplayed()
+    }
+
+    @Test
+    fun `call receptionist engine handles multi-turn hindi urgent otp refusal and routes commands`() {
+        val config = CallReceptionistConfig(
+            enabled = true,
+            autoAnswerDelaySeconds = 10,
+            availabilityMode = BossAvailabilityMode.MEETING
+        )
+        val greeting = CallReceptionistEngine.buildInitialGreeting(
+            ownerName = "अली",
+            callerDisplay = "राहुल",
+            config = config,
+            language = AssistantLanguage.HINDI
+        )
+        assertTrue(greeting.contains("LEON AI"))
+        assertTrue(greeting.contains("अली"))
+        assertTrue(greeting.contains("मीटिंग"))
+
+        val turn1 = CallReceptionistEngine.generateOfflineTurn(
+            callerDisplay = "अज्ञात कॉलर",
+            callerUtterance = "मैं राहुल बोल रहा हूँ, कल सुबह 10 बजे मीटिंग के लिए कॉल किया है",
+            priorTurns = listOf(CallTranscriptTurn("LEON AI", greeting)),
+            ownerName = "अली",
+            config = config,
+            language = AssistantLanguage.HINDI
+        )
+        assertEquals("राहुल", turn1.capturedCallerName)
+        assertTrue(turn1.capturedPurpose.contains("मीटिंग"))
+        assertEquals("MEDIUM", turn1.urgency)
+        assertFalse(turn1.shouldEscalateToBoss)
+
+        val urgentTurn = CallReceptionistEngine.generateOfflineTurn(
+            callerDisplay = "अज्ञात कॉलर",
+            callerUtterance = "यह बहुत अर्जेंट है, अस्पताल के बाहर हूँ तुरंत बात करनी है",
+            priorTurns = emptyList(),
+            ownerName = "अली",
+            config = config,
+            language = AssistantLanguage.HINDI
+        )
+        assertEquals("HIGH", urgentTurn.urgency)
+        assertTrue(urgentTurn.shouldEscalateToBoss)
+
+        val otpTurn = CallReceptionistEngine.generateOfflineTurn(
+            callerDisplay = "Unknown",
+            callerUtterance = "अपना OTP कोड बताइए वेरिफिकेशन के लिए",
+            priorTurns = emptyList(),
+            ownerName = "अली",
+            config = config,
+            language = AssistantLanguage.HINDI
+        )
+        assertTrue(otpTurn.shouldEndCall)
+        assertFalse(otpTurn.shouldEscalateToBoss)
+
+        // Voice / text command routing
+        val routed = LocalCommandRouter.tryFastPath(
+            rawPrompt = "जैसे कोई कॉल आता है और मैं रिसीव नहीं कर पा रहा हूं तो ai उससे बात करे",
+            defaultLanguage = AssistantLanguage.HINDI,
+            telemetry = DeviceTelemetry(),
+            notifications = emptyList(),
+            tasks = emptyList()
+        )
+        assertEquals(ActionType.OPEN_CALL_ASSISTANT, routed?.actions?.firstOrNull()?.type)
+
+        // Bridge state lifecycle: countdown cancelled when Boss picks up
+        CallReceptionistBridge.beginRingingCountdown("राहुल", "+919999999999", 10)
+        assertEquals("RINGING_COUNTDOWN", CallReceptionistBridge.state.value.activeCallState)
+        CallReceptionistBridge.cancelCountdownBossAnswered()
+        assertEquals("IDLE", CallReceptionistBridge.state.value.activeCallState)
+    }
+
+    @Test
+    fun `hud call assistant button opens call receptionist simulates unanswered call and saves report`() {
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("hud_call_assistant_button").performScrollTo().assertIsDisplayed().performClick()
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithTag("call_screen_title").assertIsDisplayed()
+        composeRule.onNodeWithTag("call_enabled_switch").performClick()
+        composeRule.waitForIdle()
+
+        // Scroll to Live Test & Simulator card (Item 4)
+        composeRule.onNodeWithTag("call_assistant_list").performScrollToIndex(4)
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("call_simulate_button").performClick()
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithTag("call_sim_input").performTextInput("मैं राहुल बोल रहा हूँ, कल मीटिंग है")
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("call_sim_send_button").performClick()
+
+        composeRule.waitUntil(timeoutMillis = 15_000) {
+            composeRule.onAllNodesWithText("राहुल", substring = true)
+                .fetchSemanticsNodes().size >= 2 ||
+                CallReceptionistBridge.state.value.activeTurns.size >= 3
+        }
+
+        composeRule.onNodeWithTag("call_sim_end_button").performClick()
+        composeRule.waitForIdle()
+
+        // Scroll to saved record (Item 6) and add callback task
+        composeRule.onNodeWithTag("call_assistant_list").performScrollToIndex(6)
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("call_record_0").assertIsDisplayed()
+        composeRule.onNodeWithTag("call_save_task_0").performClick()
+        composeRule.waitForIdle()
+
+        // Scroll back to header (Item 0) and navigate back to HUD
+        composeRule.onNodeWithTag("call_assistant_list").performScrollToIndex(0)
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("call_back_button").performClick()
         composeRule.waitForIdle()
         composeRule.onNodeWithTag("voice_orb_button").assertIsDisplayed()
     }

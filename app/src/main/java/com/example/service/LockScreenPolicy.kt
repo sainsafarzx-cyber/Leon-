@@ -59,6 +59,8 @@ object LockScreenPolicy {
                 "बॉस, फ़ोन लॉक है — Instagram, Facebook या WhatsApp पर स्टोरी/वीडियो पोस्ट करने के लिए कृपया फ़ोन अनलॉक करें।"
             action.type == ActionType.OPEN_LIFE_COMPASS ->
                 "बॉस, फ़ोन लॉक है — सही राह कम्पास स्क्रीन खोलने के लिए कृपया फ़ोन अनलॉक करें।"
+            action.type == ActionType.OPEN_CALL_ASSISTANT ->
+                "बॉस, फ़ोन लॉक है — AI Call Receptionist सेटिंग खोलने के लिए कृपया फ़ोन अनलॉक करें।"
             action.type in communicationSensitiveActions || action.requiresConfirmation ->
                 "बॉस, फ़ोन लॉक है — सुरक्षा के लिए WhatsApp या SMS अनलॉक करने के बाद ही चलेगा।"
             else ->

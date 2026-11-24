@@ -71,6 +71,7 @@ const val ROUTE_NEWS = "live_news"
 const val ROUTE_OFFLINE_VISION = "offline_vision"
 const val ROUTE_SOCIAL_POSTER = "social_poster"
 const val ROUTE_LIFE_COMPASS = "life_compass"
+const val ROUTE_CALL_ASSISTANT = "call_assistant"
 
 private data class LeonNavDestination(
     val route: String,
@@ -117,6 +118,7 @@ fun LeonAppNavigation() {
     val openOfflineVisionTrigger by viewModel.openOfflineVisionTrigger.collectAsStateWithLifecycle()
     val openSocialPosterTrigger by viewModel.openSocialPosterTrigger.collectAsStateWithLifecycle()
     val openLifeCompassTrigger by viewModel.openLifeCompassTrigger.collectAsStateWithLifecycle()
+    val openCallAssistantTrigger by viewModel.openCallAssistantTrigger.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
     val lifecycleOwner = LocalLifecycleOwner.current
 
@@ -162,6 +164,14 @@ fun LeonAppNavigation() {
     LaunchedEffect(openLifeCompassTrigger) {
         if (openLifeCompassTrigger > 0) {
             navController.navigate(ROUTE_LIFE_COMPASS) {
+                launchSingleTop = true
+            }
+        }
+    }
+
+    LaunchedEffect(openCallAssistantTrigger) {
+        if (openCallAssistantTrigger > 0) {
+            navController.navigate(ROUTE_CALL_ASSISTANT) {
                 launchSingleTop = true
             }
         }
@@ -278,6 +288,11 @@ fun LeonAppNavigation() {
                                     navController.navigate(ROUTE_LIFE_COMPASS) {
                                         launchSingleTop = true
                                     }
+                                },
+                                onOpenCallAssistant = {
+                                    navController.navigate(ROUTE_CALL_ASSISTANT) {
+                                        launchSingleTop = true
+                                    }
                                 }
                             )
                         }
@@ -286,6 +301,11 @@ fun LeonAppNavigation() {
                                 viewModel = viewModel,
                                 onOpenSocialPoster = {
                                     navController.navigate(ROUTE_SOCIAL_POSTER) {
+                                        launchSingleTop = true
+                                    }
+                                },
+                                onOpenCallAssistant = {
+                                    navController.navigate(ROUTE_CALL_ASSISTANT) {
                                         launchSingleTop = true
                                     }
                                 }
@@ -320,6 +340,12 @@ fun LeonAppNavigation() {
                         }
                         composable(ROUTE_LIFE_COMPASS) {
                             LifeCompassScreen(
+                                viewModel = viewModel,
+                                onBack = { navController.popBackStack() }
+                            )
+                        }
+                        composable(ROUTE_CALL_ASSISTANT) {
+                            CallAssistantScreen(
                                 viewModel = viewModel,
                                 onBack = { navController.popBackStack() }
                             )

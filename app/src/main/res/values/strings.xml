@@ -15,4 +15,7 @@
     <string name="lock_screen_action_stop">Stop</string>
     <string name="default_creator_name" translatable="false"></string>
     <string name="creator_tagline_default">Personalized LEON AI × ALI</string>
+    <string name="call_screening_label">LEON AI Call Receptionist</string>
+    <string name="call_channel_name">LEON AI Call Receptionist</string>
+    <string name="call_channel_desc">Hands-free AI receptionist for unanswered incoming calls</string>
 </resources>

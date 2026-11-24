@@ -134,6 +134,7 @@ enum class ActionType {
     OPEN_OFFLINE_VISION,
     SOCIAL_AUTO_POST,
     OPEN_LIFE_COMPASS,
+    OPEN_CALL_ASSISTANT,
     EMERGENCY_STOP
 }
 
@@ -241,6 +242,9 @@ data class DeviceTelemetry(
     val cameraPermissionGranted: Boolean = false,
     val contactsPermissionGranted: Boolean = false,
     val phonePermissionGranted: Boolean = false,
+    val readPhoneStateGranted: Boolean = false,
+    val answerPhoneCallsGranted: Boolean = false,
+    val callScreeningRoleHeld: Boolean = false,
     val writeSettingsGranted: Boolean = false,
     val notificationListenerEnabled: Boolean = false,
     val accessibilityEnabled: Boolean = false
@@ -298,6 +302,76 @@ data class CloudSyncState(
     val lastSyncedAtMillis: Long = 0L,
     val statusMessage: String = "",
     val errorMessage: String? = null
+)
+
+enum class BossAvailabilityMode(
+    val wireValue: String,
+    val title: String,
+    val hindiPhrase: String,
+    val englishPhrase: String
+) {
+    BUSY("busy", "Busy", "अभी व्यस्त हैं", "is currently busy"),
+    MEETING("meeting", "In Meeting", "अभी मीटिंग में हैं", "is currently in a meeting"),
+    DRIVING("driving", "Driving", "अभी ड्राइविंग कर रहे हैं", "is currently driving"),
+    SLEEPING("sleeping", "Resting / Sleep", "अभी आराम कर रहे हैं", "is resting right now"),
+    CUSTOM("custom", "Custom Note", "अभी कॉल रिसीव नहीं कर पा रहे हैं", "is unavailable right now")
+}
+
+@Immutable
+data class CallTranscriptTurn(
+    val speaker: String,
+    val text: String,
+    val timestampMillis: Long = System.currentTimeMillis()
+)
+
+@Immutable
+data class HandledCallRecord(
+    val id: String,
+    val callerDisplay: String,
+    val callerNumber: String,
+    val statusLabel: String,
+    val purposeSummary: String,
+    val urgency: String,
+    val aiAnswered: Boolean,
+    val turns: List<CallTranscriptTurn>,
+    val startedAtMillis: Long = System.currentTimeMillis()
+)
+
+@Immutable
+data class CallReceptionistConfig(
+    val enabled: Boolean = false,
+    val autoAnswerDelaySeconds: Int = 10,
+    val availabilityMode: BossAvailabilityMode = BossAvailabilityMode.BUSY,
+    val customBossNote: String = "",
+    val autoTakeTaskOnCallback: Boolean = true
+)
+
+@Immutable
+data class CallReceptionistUiState(
+    val config: CallReceptionistConfig = CallReceptionistConfig(),
+    val activeCallCaller: String = "",
+    val activeCallNumber: String = "",
+    val activeCallState: String = "IDLE",
+    val activeTurns: List<CallTranscriptTurn> = emptyList(),
+    val countdownSeconds: Int = 0,
+    val isGeneratingReply: Boolean = false,
+    val isListeningCaller: Boolean = false,
+    val capturedCallerName: String = "",
+    val capturedPurpose: String = "",
+    val capturedUrgency: String = "MEDIUM",
+    val handledCalls: List<HandledCallRecord> = emptyList(),
+    val simulatorInput: String = "",
+    val statusBanner: String = ""
+)
+
+data class CallReceptionistResponse(
+    val replyToCaller: String,
+    val capturedCallerName: String = "",
+    val capturedPurpose: String = "",
+    val urgency: String = "MEDIUM",
+    val shouldEscalateToBoss: Boolean = false,
+    val shouldEndCall: Boolean = false,
+    val summaryForBoss: String = ""
 )
 
 sealed interface UiState<out T> {

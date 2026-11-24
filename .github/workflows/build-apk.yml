@@ -75,12 +75,30 @@ jobs:
 
       - name: Build universal installable APK
         run: |
-          gradle :app:assembleDebug \
+          set -o pipefail
+          if ! gradle :app:assembleDebug \
             --no-daemon \
             --no-configuration-cache \
+            --no-build-cache \
+            --console=plain \
             --max-workers=2 \
             --stacktrace \
-            -Dorg.gradle.jvmargs="-Xmx2560m -XX:MaxMetaspaceSize=768m -Dfile.encoding=UTF-8 -Djava.awt.headless=true"
+            -Dorg.gradle.jvmargs="-Xmx3584m -XX:MaxMetaspaceSize=1024m -Dfile.encoding=UTF-8 -Djava.awt.headless=true" \
+            2>&1 | tee build-debug.log; then
+            echo ""
+            echo "================ EXACT BUILD ERROR SUMMARY ================"
+            grep -nE "(^> Task .* FAILED|^e: |^\* What went wrong:|Caused by:|Execution failed for task|OutOfMemoryError|Duplicate class)" build-debug.log | head -n 45 || true
+            echo "==========================================================="
+            exit 1
+          fi
+
+      - name: Upload build failure log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gradle-build-failure-log
+          path: build-debug.log
+          if-no-files-found: ignore
 
       - name: Package APK for download
         run: |

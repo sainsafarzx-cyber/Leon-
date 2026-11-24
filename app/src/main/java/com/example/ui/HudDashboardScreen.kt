@@ -65,6 +65,7 @@ import androidx.compose.material.icons.rounded.ImageSearch
 import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.Newspaper
+import androidx.compose.material.icons.rounded.PhoneInTalk
 import androidx.compose.material.icons.rounded.Psychology
 import androidx.compose.material.icons.rounded.RemoveRedEye
 import androidx.compose.material.icons.rounded.Security
@@ -138,6 +139,7 @@ fun HudDashboardScreen(
     onOpenOfflineVision: () -> Unit = {},
     onOpenSocialPoster: () -> Unit = {},
     onOpenLifeCompass: () -> Unit = {},
+    onOpenCallAssistant: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -155,6 +157,7 @@ fun HudDashboardScreen(
     val pendingConfirmation by viewModel.pendingConfirmation.collectAsStateWithLifecycle()
     val pendingMemoryProposal by viewModel.pendingMemoryProposal.collectAsStateWithLifecycle()
     val latestHumanReflection by viewModel.latestHumanReflection.collectAsStateWithLifecycle()
+    val callReceptionistState by viewModel.callReceptionistState.collectAsStateWithLifecycle()
 
     val prefs = (prefsState as? UiState.Success)?.data
     val lockScreenModeEnabled = prefs?.lockScreenModeEnabled ?: true
@@ -425,6 +428,8 @@ fun HudDashboardScreen(
                 onOpenOfflineVision = onOpenOfflineVision,
                 onOpenSocialPoster = onOpenSocialPoster,
                 onOpenLifeCompass = onOpenLifeCompass,
+                callReceptionistActive = callReceptionistState.config.enabled,
+                onOpenCallAssistant = onOpenCallAssistant,
                 onMusicToggle = { viewModel.toggleMusic() },
                 onEmergencyStop = { viewModel.emergencyStop() }
             )
@@ -773,6 +778,8 @@ private fun TelemetryRibbon(
     onOpenOfflineVision: () -> Unit,
     onOpenSocialPoster: () -> Unit,
     onOpenLifeCompass: () -> Unit,
+    callReceptionistActive: Boolean,
+    onOpenCallAssistant: () -> Unit,
     onMusicToggle: () -> Unit,
     onEmergencyStop: () -> Unit
 ) {
@@ -903,6 +910,35 @@ private fun TelemetryRibbon(
                             text = "Sahi Raah",
                             style = MaterialTheme.typography.labelSmall,
                             color = EmeraldTelemetry,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+                Surface(
+                    onClick = onOpenCallAssistant,
+                    color = if (callReceptionistActive) EmeraldTelemetry.copy(alpha = 0.16f) else ArcCyan.copy(alpha = 0.14f),
+                    shape = RoundedCornerShape(10.dp),
+                    border = BorderStroke(
+                        1.dp,
+                        if (callReceptionistActive) EmeraldTelemetry.copy(alpha = 0.75f) else ArcCyan.copy(alpha = 0.65f)
+                    ),
+                    modifier = Modifier.testTag("hud_call_assistant_button")
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.PhoneInTalk,
+                            contentDescription = "Open AI Call Receptionist",
+                            tint = if (callReceptionistActive) EmeraldTelemetry else ArcCyan,
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Text(
+                            text = if (callReceptionistActive) "Call AI ON" else "Call AI",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (callReceptionistActive) EmeraldTelemetry else ArcCyan,
                             fontWeight = FontWeight.Bold
                         )
                     }

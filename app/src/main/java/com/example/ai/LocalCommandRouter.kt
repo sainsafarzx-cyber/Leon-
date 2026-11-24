@@ -51,6 +51,9 @@ object LocalCommandRouter {
         // Priority: Human-like Right-Path Mentor / Life Compass requests
         routeLifeCompassClause(clean, lower, isDeviceLocked, ownerName)?.let { return it }
 
+        // Priority: AI Incoming Call Receptionist ("जब कोई कॉल आए और मैं रिसीव न कर पाऊँ तो AI बात करे")
+        routeCallAssistantClause(clean, lower, isDeviceLocked, ownerName)?.let { return it }
+
         if (compoundSplitter.containsMatchIn(clean)) {
             val parts = clean.split(compoundSplitter).map { it.trim() }.filter { it.isNotEmpty() }
             if (parts.size in 2..3) {
@@ -1143,6 +1146,43 @@ object LocalCommandRouter {
             spokenLanguage = AssistantLanguage.HINDI,
             actions = listOf(DeviceAction(ActionType.OPEN_LIFE_COMPASS, target = extractedDilemma)),
             suggestions = listOf("मेरे लिए सही रास्ता सोचो", "मेरी यादें बताओ")
+        )
+    }
+
+    internal fun routeCallAssistantClause(
+        @Suppress("UNUSED_PARAMETER") clean: String,
+        lower: String,
+        isDeviceLocked: Boolean,
+        ownerName: String = ""
+    ): AliBrainResult? {
+        val mentionsIncomingOrReceive = lower.contains("रिसीव") ||
+            lower.contains("receive") ||
+            lower.contains("न उठा") ||
+            lower.contains("ना उठा") ||
+            lower.contains("नहीं उठा") ||
+            lower.contains("not pick") ||
+            lower.contains("unanswered") ||
+            lower.contains("receptionist") ||
+            lower.contains("रिसेप्शनिस्ट") ||
+            lower.contains("auto answer") ||
+            lower.contains("incoming call") ||
+            ((lower.contains("कॉल") || lower.contains("call")) &&
+                (lower.contains("बात कर") || lower.contains("बात करे") || lower.contains("उठा") ||
+                    lower.contains("assistant") || lower.contains("screen") || lower.contains("ai handle")))
+
+        if (!mentionsIncomingOrReceive) return null
+
+        val bossLabel = if (ownerName.isNotBlank()) "$ownerName बॉस" else "बॉस"
+        val reply = if (isDeviceLocked) {
+            "$bossLabel, फ़ोन लॉक है — AI Call Receptionist सेटिंग खोलने के लिए फ़ोन अनलॉक करें। चालू करने के बाद यह अनअटेंडेड कॉल्स पर अपने आप बात करेगा।"
+        } else {
+            "जी $bossLabel, LEON AI Call Receptionist खोल रहा हूँ — अब जब आप कोई कॉल रिसीव नहीं कर पाएँगे, तो मैं विनम्रता से कॉलर से बात करके पूरी रिपोर्ट सेव कर लूँगा!"
+        }
+        return AliBrainResult(
+            replyText = reply,
+            spokenLanguage = AssistantLanguage.HINDI,
+            actions = listOf(DeviceAction(ActionType.OPEN_CALL_ASSISTANT)),
+            suggestions = listOf("मेरी यादें बताओ", "सही राह कम्पास खोलो")
         )
     }
 }

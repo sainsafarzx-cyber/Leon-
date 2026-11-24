@@ -25,6 +25,7 @@ import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.FlashlightOn
 import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.Pause
+import androidx.compose.material.icons.rounded.PhoneInTalk
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.PlayCircle
 import androidx.compose.material.icons.rounded.Settings
@@ -81,6 +82,7 @@ import com.example.ui.theme.NeuralViolet
 fun AutomationScreen(
     viewModel: LeonViewModel,
     onOpenSocialPoster: () -> Unit = {},
+    onOpenCallAssistant: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val telemetry by viewModel.telemetry.collectAsStateWithLifecycle()
@@ -88,6 +90,7 @@ fun AutomationScreen(
     val activeTimerSeconds by viewModel.activeTimerSeconds.collectAsStateWithLifecycle()
     val routinesState by viewModel.routinesState.collectAsStateWithLifecycle()
     val tasksState by viewModel.tasksState.collectAsStateWithLifecycle()
+    val callReceptionistState by viewModel.callReceptionistState.collectAsStateWithLifecycle()
 
     var showRoutineDialog by remember { mutableStateOf(false) }
     var showTaskDialog by remember { mutableStateOf(false) }
@@ -240,6 +243,13 @@ fun AutomationScreen(
                             active = false,
                             onClick = onOpenSocialPoster,
                             modifier = Modifier.weight(1f).testTag("control_social_poster_button")
+                        )
+                        QuickControlButton(
+                            icon = Icons.Rounded.PhoneInTalk,
+                            label = if (callReceptionistState.config.enabled) "Call AI ON" else "Call AI",
+                            active = callReceptionistState.config.enabled,
+                            onClick = onOpenCallAssistant,
+                            modifier = Modifier.weight(1f).testTag("control_call_assistant_button")
                         )
                     }
 

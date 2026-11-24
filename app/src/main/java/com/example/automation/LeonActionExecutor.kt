@@ -2,6 +2,7 @@ package com.example.automation
 
 import android.Manifest
 import android.accessibilityservice.AccessibilityService
+import android.app.role.RoleManager
 import android.bluetooth.BluetoothManager
 import android.content.Context
 import android.content.Intent
@@ -131,6 +132,20 @@ class LeonActionExecutor(private val context: Context) {
             hasPermission(Manifest.permission.POST_NOTIFICATIONS)
         } else true
 
+        val answerGranted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            hasPermission(Manifest.permission.ANSWER_PHONE_CALLS)
+        } else {
+            false
+        }
+        val screeningHeld = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            runCatching {
+                val rm = context.getSystemService(RoleManager::class.java)
+                rm?.isRoleHeld(RoleManager.ROLE_CALL_SCREENING) == true
+            }.getOrDefault(false)
+        } else {
+            true
+        }
+
         return DeviceTelemetry(
             batteryPercent = batteryPct,
             charging = charging,
@@ -146,6 +161,9 @@ class LeonActionExecutor(private val context: Context) {
             cameraPermissionGranted = hasPermission(Manifest.permission.CAMERA),
             contactsPermissionGranted = hasPermission(Manifest.permission.READ_CONTACTS),
             phonePermissionGranted = hasPermission(Manifest.permission.CALL_PHONE),
+            readPhoneStateGranted = hasPermission(Manifest.permission.READ_PHONE_STATE),
+            answerPhoneCallsGranted = answerGranted,
+            callScreeningRoleHeld = screeningHeld,
             writeSettingsGranted = Settings.System.canWrite(context),
             notificationListenerEnabled = NotificationBridge.listenerConnected.value,
             accessibilityEnabled = AccessibilityBridge.serviceConnected.value
@@ -191,7 +209,8 @@ class LeonActionExecutor(private val context: Context) {
             ActionType.CREATE_TASK, ActionType.CREATE_ROUTINE, ActionType.EMERGENCY_STOP,
             ActionType.OPTICAL_MORSE, ActionType.TOGGLE_AIR_GESTURES, ActionType.ANALYZE_ENVIRONMENT,
             ActionType.SAVE_MEMORY, ActionType.SET_OWNER_IDENTITY, ActionType.FETCH_NEWS,
-            ActionType.OPEN_OFFLINE_VISION, ActionType.SOCIAL_AUTO_POST, ActionType.OPEN_LIFE_COMPASS ->
+            ActionType.OPEN_OFFLINE_VISION, ActionType.SOCIAL_AUTO_POST, ActionType.OPEN_LIFE_COMPASS,
+            ActionType.OPEN_CALL_ASSISTANT ->
                 ActionExecutionOutcome(true, "Handled by LEON controller.")
         }
     }

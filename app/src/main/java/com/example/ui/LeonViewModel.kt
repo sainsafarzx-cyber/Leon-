@@ -12,6 +12,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.ai.AliAiBrain
+import com.example.ai.CallReceptionistEngine
 import com.example.ai.HumanWisdomEngine
 import com.example.ai.LocalCommandRouter
 import com.example.audio.LeonSpeaker
@@ -20,6 +21,8 @@ import com.example.data.ActionType
 import com.example.data.AirGestureAction
 import com.example.data.AssistantLanguage
 import com.example.data.AutomationRoutine
+import com.example.data.BossAvailabilityMode
+import com.example.data.CallReceptionistUiState
 import com.example.data.CapturedNotification
 import com.example.data.CloudSyncState
 import com.example.data.ConversationMessage
@@ -27,6 +30,7 @@ import com.example.data.DailyTask
 import com.example.data.DeviceAction
 import com.example.data.DeviceTelemetry
 import com.example.data.FirebaseCloudSync
+import com.example.data.HandledCallRecord
 import com.example.data.HumanReflectionBanner
 import com.example.data.LeonRepository
 import com.example.data.LifeCompassUiState
@@ -42,6 +46,8 @@ import com.example.data.UserPreferences
 import com.example.news.LiveNewsEngine
 import com.example.news.NewsCategory
 import com.example.sensors.SixthSenseEngine
+import com.example.service.CallReceptionistBridge
+import com.example.service.LeonCallReceptionistService
 import com.example.service.LeonVoiceService
 import com.example.service.LockScreenPolicy
 import com.example.service.NotificationBridge
@@ -211,6 +217,11 @@ class LeonViewModel(
     private val _openLifeCompassTrigger = MutableStateFlow(0)
     val openLifeCompassTrigger: StateFlow<Int> = _openLifeCompassTrigger.asStateFlow()
 
+    val callReceptionistState: StateFlow<CallReceptionistUiState> = CallReceptionistBridge.state
+
+    private val _openCallAssistantTrigger = MutableStateFlow(0)
+    val openCallAssistantTrigger: StateFlow<Int> = _openCallAssistantTrigger.asStateFlow()
+
     private val socialMediaEngine by lazy { SocialMediaEngine(appContext) }
 
     private val sixthSenseEngine = SixthSenseEngine(
@@ -228,6 +239,7 @@ class LeonViewModel(
     private var activeAiJob: Job? = null
     private var newsFetchJob: Job? = null
     private var compassJob: Job? = null
+    private var callSimJob: Job? = null
 
     init {
         LeonSpeaker.init(appContext)
@@ -936,6 +948,11 @@ class LeonViewModel(
                 }
                 _openLifeCompassTrigger.value += 1
                 "Opened Sahi Raah • Life Compass"
+            }
+            ActionType.OPEN_CALL_ASSISTANT -> {
+                refreshTelemetry()
+                _openCallAssistantTrigger.value += 1
+                "Opened AI Call Receptionist"
             }
             else -> withContext(Dispatchers.IO) { executor.execute(action).logMessage }
         }
@@ -1766,8 +1783,170 @@ class LeonViewModel(
         _statusBanner.value = "$safeMins मिनट का फोकस टाइमर शुरू हो गया — पूरे ध्यान से आगे बढ़ें!"
     }
 
+    // === AI Incoming Call Receptionist Controls & Interactive Simulator ===
+
+    fun toggleCallReceptionist(enabled: Boolean) {
+        CallReceptionistBridge.updateConfig { it.copy(enabled = enabled) }
+        refreshTelemetry()
+        _statusBanner.value = if (enabled) {
+            val sec = CallReceptionistBridge.state.value.config.autoAnswerDelaySeconds
+            "AI Call Receptionist चालू! अब ${sec}s तक कॉल रिसीव न होने पर LEON बात करेगा।"
+        } else {
+            "AI Call Receptionist बंद कर दिया गया।"
+        }
+    }
+
+    fun updateCallAutoAnswerDelay(seconds: Int) {
+        val clamped = seconds.coerceIn(5, 25)
+        CallReceptionistBridge.updateConfig { it.copy(autoAnswerDelaySeconds = clamped) }
+    }
+
+    fun updateBossAvailabilityMode(mode: BossAvailabilityMode, customNote: String? = null) {
+        CallReceptionistBridge.setAvailabilityMode(mode, customNote)
+    }
+
+    fun updateAutoTakeCallbackTask(enabled: Boolean) {
+        CallReceptionistBridge.updateConfig { it.copy(autoTakeTaskOnCallback = enabled) }
+    }
+
+    fun updateCallSimulatorInput(text: String) {
+        CallReceptionistBridge.setSimulatorInput(text)
+    }
+
+    fun startSimulatedIncomingCall(callerLabel: String = "राहुल शर्मा") {
+        val prefs = currentPreferences()
+        val lang = AssistantLanguage.fromCode(prefs.defaultLanguage)
+        val config = CallReceptionistBridge.state.value.config
+        val greeting = CallReceptionistEngine.buildInitialGreeting(
+            ownerName = prefs.ownerName,
+            callerDisplay = callerLabel,
+            config = config,
+            language = lang
+        )
+        CallReceptionistBridge.beginAiDialogueSession(
+            callerDisplay = callerLabel,
+            callerNumber = "+91-98765-43210",
+            initialGreeting = greeting,
+            isSimulation = true
+        )
+        if (_voiceRepliesEnabled.value) {
+            speakOutLoud(greeting, lang, currentVoiceSpeed(), forceForeground = true)
+        }
+    }
+
+    fun sendSimulatedCallerTurn(overrideText: String? = null) {
+        val snapshot = CallReceptionistBridge.state.value
+        val utterance = (overrideText ?: snapshot.simulatorInput).trim()
+        if (utterance.isEmpty()) return
+        if (snapshot.activeCallState !in setOf("SIMULATED_ACTIVE", "AI_TALKING")) {
+            startSimulatedIncomingCall()
+        }
+
+        CallReceptionistBridge.appendCallerTurn(utterance)
+        CallReceptionistBridge.setGeneratingReply(true)
+        callSimJob?.cancel()
+        callSimJob = viewModelScope.launch {
+            try {
+                val prefs = currentPreferences()
+                val lang = AssistantLanguage.fromCode(prefs.defaultLanguage)
+                val latestSnapshot = CallReceptionistBridge.state.value
+                val tel = _telemetry.value
+
+                val response = if (tel.internetConnected) {
+                    aliBrain.generateCallReceptionistTurn(
+                        callerDisplay = latestSnapshot.activeCallCaller,
+                        callerUtterance = utterance,
+                        priorTurns = latestSnapshot.activeTurns.dropLast(1),
+                        ownerName = prefs.ownerName,
+                        config = latestSnapshot.config,
+                        language = lang,
+                        existingCallerName = latestSnapshot.capturedCallerName,
+                        existingPurpose = latestSnapshot.capturedPurpose
+                    )
+                } else {
+                    CallReceptionistEngine.generateOfflineTurn(
+                        callerDisplay = latestSnapshot.activeCallCaller,
+                        callerUtterance = utterance,
+                        priorTurns = latestSnapshot.activeTurns.dropLast(1),
+                        ownerName = prefs.ownerName,
+                        config = latestSnapshot.config,
+                        language = lang,
+                        existingCallerName = latestSnapshot.capturedCallerName,
+                        existingPurpose = latestSnapshot.capturedPurpose
+                    )
+                }
+
+                CallReceptionistBridge.appendAiTurn(
+                    replyText = response.replyToCaller,
+                    capturedName = response.capturedCallerName,
+                    capturedPurpose = response.capturedPurpose,
+                    urgency = response.urgency,
+                    statusBanner = response.summaryForBoss
+                )
+                if (_voiceRepliesEnabled.value) {
+                    speakOutLoud(response.replyToCaller, lang, currentVoiceSpeed(), forceForeground = true)
+                }
+                if (response.shouldEndCall) {
+                    val finalized = CallReceptionistBridge.finalizeActiveCallSession("AI Call Completed")
+                    if (finalized != null && latestSnapshot.config.autoTakeTaskOnCallback) {
+                        saveCallbackTaskForRecord(finalized, showBanner = false)
+                    }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                CallReceptionistBridge.setGeneratingReply(false)
+                _statusBanner.value = e.localizedMessage ?: "कॉल सिमुलेशन में त्रुटि आई।"
+            }
+        }
+    }
+
+    fun endActiveOrSimulatedCall() {
+        callSimJob?.cancel()
+        val stateNow = CallReceptionistBridge.state.value
+        if (stateNow.activeCallState == "AI_TALKING" || stateNow.activeCallState == "RINGING_COUNTDOWN") {
+            LeonCallReceptionistService.stopActiveCall(appContext)
+        } else {
+            val finalized = CallReceptionistBridge.finalizeActiveCallSession()
+            if (finalized != null && stateNow.config.autoTakeTaskOnCallback) {
+                saveCallbackTaskForRecord(finalized, showBanner = true)
+            }
+        }
+    }
+
+    fun speakHandledCallSummary(record: HandledCallRecord) {
+        val alertText = CallReceptionistEngine.formatBossCallAlert(record)
+        _voiceRepliesEnabled.value = true
+        speakOutLoud(alertText, AssistantLanguage.HINDI, currentVoiceSpeed(), forceForeground = true)
+    }
+
+    fun addHandledCallAsTask(record: HandledCallRecord) {
+        saveCallbackTaskForRecord(record, showBanner = true)
+    }
+
+    private fun saveCallbackTaskForRecord(record: HandledCallRecord, showBanner: Boolean) {
+        val priority = when (record.urgency.uppercase()) {
+            "HIGH" -> TaskPriority.HIGH
+            "LOW" -> TaskPriority.LOW
+            else -> TaskPriority.MEDIUM
+        }
+        viewModelScope.launch {
+            repository.createTask(
+                title = "Call back ${record.callerDisplay}: ${record.purposeSummary.take(65)}",
+                notes = record.turns.joinToString("\n") { "${it.speaker}: ${it.text}" },
+                dueLabel = if (record.urgency == "HIGH") "Urgent Today" else "Today",
+                priority = priority
+            ).onSuccess {
+                if (showBanner) {
+                    _statusBanner.value = "कॉलबैक टास्क सेव हो गया: ${record.callerDisplay}"
+                }
+            }
+        }
+    }
+
     override fun onCleared() {
         super.onCleared()
+        callSimJob?.cancel()
         LeonSpeaker.setOnSpeechIdleListener(null)
         VoiceServiceBridge.setForegroundMicActive(false)
         LeonSpeaker.stop(notifyIdle = false)
