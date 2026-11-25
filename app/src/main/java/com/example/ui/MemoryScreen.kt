@@ -72,6 +72,7 @@ import androidx.credentials.CredentialManager
 import androidx.credentials.CustomCredential
 import androidx.credentials.GetCredentialRequest
 import androidx.credentials.exceptions.GetCredentialCancellationException
+import androidx.credentials.exceptions.NoCredentialException
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.R
 import com.example.data.AssistantLanguage
@@ -96,6 +97,7 @@ import com.google.firebase.auth.auth
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
+import java.util.Locale
 
 private const val AUTH_TAG = "Auth"
 
@@ -310,7 +312,7 @@ fun MemoryScreen(
                     Column {
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                             Text("Voice Speed", style = MaterialTheme.typography.bodyMedium)
-                            Text("${String.format("%.1f", speedSlider)}x", style = MaterialTheme.typography.labelMedium, color = ArcCyan)
+                            Text("${String.format(Locale.getDefault(), "%.1f", speedSlider)}x", style = MaterialTheme.typography.labelMedium, color = ArcCyan)
                         }
                         Slider(
                             value = speedSlider,
@@ -683,6 +685,9 @@ private fun onGoogleSignInClicked(
         } catch (e: GetCredentialCancellationException) {
             Log.w(AUTH_TAG, "Google Sign-In flow cancelled or dismissed: ${e.message}", e)
             onAuthCancelled()
+        } catch (e: NoCredentialException) {
+            Log.w(AUTH_TAG, "No Google credentials available on device: ${e.message}", e)
+            onAuthError("No Google account found on this device. Please add a Google account in Settings.")
         } catch (e: Exception) {
             Log.e(AUTH_TAG, "Google Sign-In failed", e)
             onAuthError(e.localizedMessage ?: "Google Sign-In failed")

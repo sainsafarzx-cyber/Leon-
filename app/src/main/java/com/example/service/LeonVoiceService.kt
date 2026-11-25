@@ -556,7 +556,7 @@ class LeonVoiceService : Service(), TextToSpeech.OnInitListener {
     private fun promoteToForegroundSafely(includeMic: Boolean) {
         val notification = buildNotification()
         try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 val fgType = when {
                     includeMic && hasMicPermission() ->
                         ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
@@ -564,12 +564,7 @@ class LeonVoiceService : Service(), TextToSpeech.OnInitListener {
                 }
                 startForeground(NOTIFICATION_ID, notification, fgType)
             } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                val fgType = if (includeMic && hasMicPermission()) {
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
-                } else {
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
-                }
-                startForeground(NOTIFICATION_ID, notification, fgType)
+                startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
             } else {
                 startForeground(NOTIFICATION_ID, notification)
             }
@@ -1452,12 +1447,7 @@ class LeonVoiceService : Service(), TextToSpeech.OnInitListener {
     }
 
     private fun stopForegroundCompat() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            stopForeground(STOP_FOREGROUND_REMOVE)
-        } else {
-            @Suppress("DEPRECATION")
-            stopForeground(true)
-        }
+        stopForeground(STOP_FOREGROUND_REMOVE)
     }
 
     private fun stopRecognizerInternal() {

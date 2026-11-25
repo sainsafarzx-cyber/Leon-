@@ -41,13 +41,14 @@ class LeonCallScreeningService : CallScreeningService() {
         }
 
         // Always allow normal call ringing so the Boss has first chance to answer manually.
-        val response = CallResponse.Builder()
+        val responseBuilder = CallResponse.Builder()
             .setDisallowCall(false)
             .setRejectCall(false)
-            .setSilenceCall(false)
             .setSkipCallLog(false)
             .setSkipNotification(false)
-            .build()
-        respondToCall(callDetails, response)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            responseBuilder.setSilenceCall(false)
+        }
+        respondToCall(callDetails, responseBuilder.build())
     }
 }

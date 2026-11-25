@@ -521,13 +521,15 @@ class LeonCallReceptionistService : Service() {
     private fun promoteToForeground(includeMic: Boolean) {
         val notif = buildNotification("LEON AI कॉल रिसेप्शनिस्ट तैयार है")
         try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 val type = if (includeMic) {
                     ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
                 } else {
                     ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
                 }
                 startForeground(CALL_NOTIFICATION_ID, notif, type)
+            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(CALL_NOTIFICATION_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
             } else {
                 startForeground(CALL_NOTIFICATION_ID, notif)
             }
@@ -586,12 +588,7 @@ class LeonCallReceptionistService : Service() {
 
     private fun stopForegroundCompat() {
         runCatching {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                stopForeground(STOP_FOREGROUND_REMOVE)
-            } else {
-                @Suppress("DEPRECATION")
-                stopForeground(true)
-            }
+            stopForeground(STOP_FOREGROUND_REMOVE)
         }
     }
 

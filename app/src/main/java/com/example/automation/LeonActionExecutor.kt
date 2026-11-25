@@ -405,19 +405,17 @@ class LeonActionExecutor(private val context: Context) {
 
         val uri = Uri.parse("tel:$phoneNumber")
         if (hasPermission(Manifest.permission.CALL_PHONE)) {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                val placedViaTelecom = runCatching {
-                    val tm = context.getSystemService(Context.TELECOM_SERVICE) as? TelecomManager
-                    if (tm != null) {
-                        tm.placeCall(uri, Bundle())
-                        true
-                    } else {
-                        false
-                    }
-                }.getOrDefault(false)
-                if (placedViaTelecom) {
-                    return ActionExecutionOutcome(true, "Calling $target ($phoneNumber).")
+            val placedViaTelecom = runCatching {
+                val tm = context.getSystemService(Context.TELECOM_SERVICE) as? TelecomManager
+                if (tm != null) {
+                    tm.placeCall(uri, Bundle())
+                    true
+                } else {
+                    false
                 }
+            }.getOrDefault(false)
+            if (placedViaTelecom) {
+                return ActionExecutionOutcome(true, "Calling $target ($phoneNumber).")
             }
             val callOutcome = launchSafe(Intent(Intent.ACTION_CALL, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
             return if (callOutcome.success) {
